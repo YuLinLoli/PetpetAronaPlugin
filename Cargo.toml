@@ -1,0 +1,35 @@
+[package]
+# 插件发布名。真正的插件 id 是 src/lib.rs 里 PluginMeta::new 的第一个参数（"petpet"），
+# 它决定 plugins/<id>/、config/<id>/arona.yml 与 data/<id>/ 的目录名。
+name = "petpet-plugin"
+version = "0.1.0"
+edition = "2024"
+description = "Arona 功能插件：把 Dituon/petpet 的模板渲染能力移植进 Arona 框架"
+license = "AGPL-3.0-or-later"
+
+[lib]
+# 产物 target/release/petpet_plugin.dll，拷贝进 <运行目录>/plugins/petpet/
+name = "petpet_plugin"
+path = "src/lib.rs"
+# cdylib 供框架运行期扫描装载；rlib 那份只给 `cargo test` 用
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# 框架本体。插件只依赖 arona，且必须 default-features = false（gui 只在宿主打开）。
+# 包名是 arona-rs（crates.io 上的 arona 是另一个项目），库名仍是 arona。
+arona = { package = "arona-rs", path = "C:/Users/cheng/RustroverProjects/Arona-rs/crates/arona", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 图像编解码：png/jpeg/webp/bmp 读入，gif 多帧读写。关掉默认特性避免拖入 avif/exr 等重依赖。
+image = { version = "0.25", default-features = false, features = ["gif", "png", "jpeg", "webp", "bmp"] }
+# 纯 Rust 字体栅格化（覆盖 CJK 需要运行期加载系统字体，见 src/text.rs）
+fontdue = "0.8"
+tokio = { version = "1", features = ["time", "rt", "macros", "sync"] }
+# base64：输入图内联成 data: URI、输出图交给框架内嵌（不落盘）
+base64 = "0.22"
+
+[profile.release]
+# 与框架 workspace 同一档；握手比的是 profile 名而非调优参数
+opt-level = 2
+# 想在 IDE 里 attach 到 arona-rs.exe 断点调试插件，取消下一行注释再重编 dll
+# debug = 1

@@ -1,0 +1,4 @@
+# 宿主与插件的 ABI 指纹里带着 rustc 的 release 号，编译器版本不一致的插件会被宿主直接拒载。
+# 本行必须与框架仓库 rust-toolchain.toml 逐字一致；框架升级工具链时插件要跟着改再重编。
+[toolchain]
+channel = "1.98.0"

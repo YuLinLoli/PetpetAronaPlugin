@@ -1,0 +1,16 @@
+[package]
+name = "fake-onebot"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# 独立工作区，避免被插件的包目录牵连
+[workspace]
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.22"
