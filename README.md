@@ -6,7 +6,7 @@
 ## 发布信息
 
 ```text
-适用于 Arona-rs 1.1.0（框架契约 1.0.0，符号布局 5）
+适用于 Arona-rs 1.1.0（框架契约 1.0.0，符号布局 6）
 构建工具链：rustc 1.98.0，x86_64-pc-windows-msvc，--release，crt-static
 下载后放进 <框架运行目录>/plugins/petpet/，重启框架
 ```
