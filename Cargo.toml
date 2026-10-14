@@ -17,7 +17,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # 框架本体。插件只依赖 arona，且必须 default-features = false（gui 只在宿主打开）。
 # 包名是 arona-rs（crates.io 上的 arona 是另一个项目），库名仍是 arona。
-arona = { package = "arona-rs", path = "C:/Users/cheng/RustroverProjects/Arona-rs/crates/arona", default-features = false }
+# 框架仓与本插件仓同在 G:\rustprojects 下，相对路径跟着仓库一起挪，不用记绝对位置。
+arona = { package = "arona-rs", path = "../Arona-rs/crates/arona", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 图像编解码：png/jpeg/webp/bmp 读入，gif 多帧读写。关掉默认特性避免拖入 avif/exr 等重依赖。

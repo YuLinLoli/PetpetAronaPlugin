@@ -157,8 +157,8 @@ cargo test                      # 单元测试 + 端到端渲染测试
 ```
 
 需要与宿主一致的 rustc 1.98.0 与静态 CRT（仓库里的 `rust-toolchain.toml`、
-`.cargo/config.toml` 已经钉好）。默认依赖本地框架仓库
-`C:/Users/cheng/RustroverProjects/Arona-rs`，换机器时改 `Cargo.toml` 里的 `arona` 路径即可。
+`.cargo/config.toml` 已经钉好）。默认依赖同级的本地框架仓库 `../Arona-rs`——两个仓一起挪盘
+不用改任何东西，只有框架挪到别处时才需要动 `Cargo.toml` 里的 `arona` 路径。
 
 用真实模板素材跑一次渲染冒烟（可选）：
 

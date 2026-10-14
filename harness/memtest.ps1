@@ -15,7 +15,8 @@ $pluginRoot = "G:\rustprojects\petpet-arona-plugin"
 $harness = "$pluginRoot\harness\fake-onebot\target\release\fake-onebot.exe"
 $runDir = "$pluginRoot\target\e2e\run"
 $outDir = "$pluginRoot\target\e2e\artifacts\$Label"
-$fwExe = "C:\Users\cheng\RustroverProjects\Arona-rs\target\release\arona-rs.exe"
+# 框架仓是本仓在同级目录下的兄弟，路径跟着仓库一起挪，不留绝对位置
+$fwExe = "$(Split-Path $pluginRoot)\Arona-rs\target\release\arona-rs.exe"
 
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 Get-ChildItem "$outDir" -Include "batch*" -ErrorAction SilentlyContinue | ForEach-Object { [System.IO.File]::Delete($_.FullName) }
