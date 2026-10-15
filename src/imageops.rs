@@ -1209,7 +1209,11 @@ pub fn deform(src: &RgbaImage, points: [[f32; 2]; 4]) -> RgbaImage {
         return src.clone();
     }
     let deformed = projection_matrix(&points);
-    let origin_to_deformed = mul(deformed, rect_matrix(w, h));
+    // 先把「单位正方形 → 源图矩形」的 rect 矩阵求逆，才能得到「源图像素 → 四边形」的映射；
+    // 少了这一步，映射按源图矩形的绝对坐标去套单位正方形的变换，源图只有一条对角带能落进目标四边形。
+    let mut rect = rect_matrix(w, h);
+    rect.invert();
+    let origin_to_deformed = mul(deformed, rect);
     let mut to_origin = origin_to_deformed;
     to_origin.invert();
     let corner = |x: f32, y: f32| origin_to_deformed.transform(x, y);

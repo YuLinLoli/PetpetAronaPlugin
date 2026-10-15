@@ -1243,6 +1243,68 @@ mod tests {
         );
     }
 
+    /// P4A 必须把整张源图铺到四边形上：源图四象限各自的颜色都该出现在成品里。
+    /// 之前 `rect_matrix` 忘了求逆，映射退化，成品只剩两片被钳到边角的纯色三角。
+    #[test]
+    fn p4a_deform_maps_every_source_quadrant() {
+        let dir = scratch("p4a_quad");
+        write_png(&dir.join("bg.png"), 120, 120, [255, 255, 255, 255]);
+        let quadrants: [[u8; 4]; 4] = [
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [255, 255, 0, 255],
+        ];
+        let mut avatar = RgbaImage::new(40, 40);
+        for (x, y, pixel) in avatar.enumerate_pixels_mut() {
+            let index = usize::from(x >= 20) + usize::from(y >= 20) * 2;
+            *pixel = Rgba(quadrants[index]);
+        }
+        avatar.save(dir.join("avatar.png")).unwrap();
+        std::fs::write(
+            dir.join("template.json"),
+            r##"{
+              "type": "image",
+              "canvas": {"width": 120, "height": 120},
+              "elements": [
+                {"type": "background", "src": "bg.png"},
+                {"type": "image", "key": "to",
+                 "coords": [[20, 20], [100, 20], [100, 100], [20, 100], [20, 20]],
+                 "fit": "fill"}
+              ]
+            }"##,
+        )
+        .unwrap();
+
+        let template = crate::template::load_dir("p4a_quad", &dir).unwrap();
+        let mut request = Request::default();
+        request.images.insert(
+            "to".to_string(),
+            dir.join("avatar.png").to_string_lossy().to_string(),
+        );
+        let assets = AssetStore::new(4);
+        let output = block_on(render(&template, &request, &assets, None, 10, 4096)).unwrap();
+        let decoded = image::load_from_memory(&output.bytes).unwrap().to_rgba8();
+
+        let close = |pixel: &Rgba<u8>, target: [u8; 4]| {
+            (0..3).all(|i| pixel.0[i].abs_diff(target[i]) < 40)
+        };
+        let mut counts = [0usize; 4];
+        for pixel in decoded.pixels() {
+            for (index, target) in quadrants.iter().enumerate() {
+                if close(pixel, *target) {
+                    counts[index] += 1;
+                }
+            }
+        }
+        for (index, count) in counts.iter().enumerate() {
+            assert!(
+                *count > 500,
+                "源图第 {index} 象限没铺到成品上（counts={counts:?}）"
+            );
+        }
+    }
+
     #[test]
     fn renders_filter_chain_with_mirage_and_crop() {
         let dir = scratch("filters");
