@@ -19,7 +19,7 @@ pub struct PetpetConfig {
     pub user_cooldown_time: i64,
     /// 冷却中的提示语，留空则不回复。填 `[nudge]` 表示改戳一戳。
     pub in_cooldown_message: String,
-    /// 戳一戳开关（默认 true）；关掉后群里戳机器人不再回应
+    /// 戳一戳总开关（默认 true，全局）；与按群的 `/pet nudge` 开关取 AND
     pub nudge_enabled: bool,
     /// 戳一戳触发随机模板的概率，0 - 1，默认 0.3
     pub nudge_probability: f64,
@@ -95,7 +95,7 @@ impl PluginConfig for PetpetConfig {
             "max_side" => "合成结果最大边长(px)",
             "cache_entries" => "资源缓存条数上限",
             "cache_bytes" => "资源缓存字节上限（默认 256MiB）",
-            "nudge_enabled" => "戳一戳开关；关掉后群里戳机器人不再回应",
+            "nudge_enabled" => "戳一戳总开关（全局）；与按群的 /pet nudge 开关取 AND",
             "global_cooldown_time" => "全局冷却（毫秒）：所有群/用户共用，0 表示不限",
             _ => return None,
         })

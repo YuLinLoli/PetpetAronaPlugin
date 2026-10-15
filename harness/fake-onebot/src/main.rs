@@ -118,6 +118,52 @@ fn image_event(n: u64, port: u16, template: &str, mode: &str, size: u32, text: &
     })
 }
 
+fn text_event(text: &str) -> Value {
+    json!({
+        "post_type": "message",
+        "message_type": "group",
+        "sub_type": "normal",
+        "message_id": 9000,
+        "group_id": GROUP_ID,
+        "user_id": USER_ID,
+        "self_id": SELF_ID,
+        "time": now_secs(),
+        "font": 0,
+        "raw_message": text,
+        "sender": {
+            "user_id": USER_ID,
+            "nickname": "tester",
+            "card": "",
+            "role": "admin",
+            "sex": "unknown",
+            "age": 0
+        },
+        "message": [ { "type": "text", "data": { "text": text } } ]
+    })
+}
+
+fn poke_event() -> Value {
+    json!({
+        "post_type": "notice",
+        "notice_type": "notify",
+        "sub_type": "poke",
+        "group_id": GROUP_ID,
+        "user_id": USER_ID,
+        "target_id": SELF_ID,
+        "operator_id": USER_ID,
+        "self_id": SELF_ID,
+        "time": now_secs(),
+        "sender": {
+            "user_id": USER_ID,
+            "nickname": "tester",
+            "card": "",
+            "role": "member",
+            "sex": "unknown",
+            "age": 0
+        }
+    })
+}
+
 fn action_reply(action: &str, echo: &Value) -> Value {
     let data = match action {
         "get_login_info" => json!({ "user_id": SELF_ID, "nickname": "Arona" }),
@@ -154,9 +200,14 @@ async fn send_round(
     size: u32,
     text: &str,
     wait: bool,
+    poke: bool,
 ) {
     let target = n + 1;
-    let event = image_event(n, port, template, mode, size, text);
+    let event = if poke {
+        poke_event()
+    } else {
+        image_event(n, port, template, mode, size, text)
+    };
     if tx.send(Message::Text(event.to_string())).is_err() {
         panic!("WS 写通道已关闭");
     }
@@ -188,6 +239,8 @@ async fn main() {
     let image_mode = std::env::var("IMAGE_MODE").unwrap_or_else(|_| "url".to_string());
     let text_override = std::env::var("TEXT").unwrap_or_default();
     let wait_reply = std::env::var("WAIT").ok().map(|v| v != "0").unwrap_or(true);
+    let poke = std::env::var("POKE").ok().map(|v| v != "0").unwrap_or(false);
+    let precmd = std::env::var("PRECMD").unwrap_or_default();
     let img_port = 8080u16;
     let ws_port = 6700u16;
 
@@ -237,23 +290,35 @@ async fn main() {
     // 等外部先采一个干净基线（batch0.go），再开始灌
     wait_file(&outdir, "batch0.go").await;
 
+    // 可选：先发一条普通群消息（例如 "pet nudge off"），再开始戳
+    if !precmd.is_empty() {
+        let _ = tx.send(Message::Text(text_event(&precmd).to_string()));
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+    }
+    println!(
+        "[base] replies={} actions={}",
+        replies.load(Ordering::Relaxed),
+        actions_seen.load(Ordering::Relaxed)
+    );
+
     // 逐批灌入：每批 ROUNDS1 条，批间等外部采样完再继续（读 batchN.go）
     let mut sent: u64 = 0;
     for batch in 1..=batches {
         let t = std::time::Instant::now();
         for _ in 0..rounds1 {
             let text = if text_override.is_empty() { format!("pet {template}") } else { text_override.clone() };
-            send_round(&tx, &replies, sent, img_port, &template, &image_mode, size, &text, wait_reply).await;
+            send_round(&tx, &replies, sent, img_port, &template, &image_mode, size, &text, wait_reply, poke).await;
             sent += 1;
             if sent % 20 == 0 {
                 println!("[batch{batch}] 已发 {sent}");
             }
         }
         println!(
-            "[batch{batch}] 完成，累计 {sent} 条，用时 {:?}，HTTP 命中 {}，动作 {}",
+            "[batch{batch}] 完成，累计 {sent} 条，用时 {:?}，HTTP 命中 {}，动作 {}，回图 {}",
             t.elapsed(),
             hits.load(Ordering::Relaxed),
-            actions_seen.load(Ordering::Relaxed)
+            actions_seen.load(Ordering::Relaxed),
+            replies.load(Ordering::Relaxed)
         );
         marker(&outdir, &format!("batch{batch}.done"));
         if batch < batches {
@@ -262,6 +327,11 @@ async fn main() {
     }
 
     // 保持连接，等外部采样完再被杀
+    println!(
+        "[stat] replies={} actions={}",
+        replies.load(Ordering::Relaxed),
+        actions_seen.load(Ordering::Relaxed)
+    );
     println!("[done] 进入待机");
     let _ = writer.await;
     let _ = reader.await;

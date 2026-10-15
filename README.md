@@ -6,7 +6,7 @@
 ## 发布信息
 
 ```text
-petpet 0.1.1
+petpet 0.1.2
 适用于 Arona-rs 1.1.0（框架契约 1.0.0，符号布局 8）
 构建工具链：rustc 1.98.0，x86_64-pc-windows-msvc，--release，crt-static
 下载后放进 <框架运行目录>/plugins/petpet/，重启框架
@@ -47,8 +47,8 @@ petpet 0.1.1
   `0`、`1`…… 取第 n 个空格分隔的文本参数。
 - **触发文本只取文字段**（与原版 petpet 的 `MessageChain.contentText` 一致）：图片、@、引用、表情
   都不参与匹配，所以 `@某人 亲亲`、`[图片]pet`、`亲亲[图片]`、`pet @某人` 都能触发，谁先谁后都行。
-- **戳一戳**：群内收到戳一戳（Poke / Nudge）时，若 `nudge_enabled` 开启，有 `nudge_probability`
-  概率用随机模板生成一张图，并单独计时冷却。
+- **戳一戳**：群内收到戳一戳（Poke / Nudge）时，若全局 `nudge_enabled` 与本群的
+  `petpet.nudge` 开关都开启，有 `nudge_probability` 概率用随机模板生成一张图，并单独计时冷却。
 - **回复会引用触发消息**：群内生成的表情图带 `reply` 段引用触发它的那条消息（与原版 petpet 的群回复一致）；私聊不引用。
 - **模板索引走合并转发**：群里直接发 `pet` 会用合并转发（节点昵称 `Petpet!`）发出模板列表；私聊或实现端不支持时自动降级成文本 / 平铺消息。
 - **GIF 无限循环**：动图模板导出的 GIF 写入 `NETSCAPE2.0` 循环块，和原版一样一直循环播放。
@@ -66,6 +66,7 @@ petpet 0.1.1
 | `/pet on` / `/pet off` | 开启 / 关闭本群的 Petpet（等价 `/pet feature on\|off`） |
 | `/pet enable` / `/pet disable` | 全局启用 / 停用 Petpet 插件 |
 | `/pet plugin on` / `/pet plugin off` | 在本群整体启用 / 停用 Petpet 插件 |
+| `/pet nudge on` / `/pet nudge off` | 单独开关本群的戳一戳响应（与渲染开关互不影响） |
 | `/pet ban @某人` / `/pet unban @某人` | 加入 / 移出本群黑名单（也可回复某人的消息，或直接写 QQ 号） |
 | `/pet banlist` | 查看本群黑名单 |
 | `/pet status` | 查看当前开关状态 |
@@ -74,8 +75,9 @@ petpet 0.1.1
 
 ### 群开关与黑名单（与 GUI 互通）
 
-- 插件向框架登记了两个可分群开关的功能：`petpet`（渲染）与 `petpet.admin`（管理指令），
-  在管理面板「功能开关」页会各自出现一个勾选框，按插件折叠后还能整组开关。
+- 插件向框架登记了三个可分群开关的功能：`petpet`（渲染）、`petpet.nudge`（戳一戳）与
+  `petpet.admin`（管理指令），在管理面板「功能开关」页会各自出现一个勾选框，按插件折叠后
+  还能整组开关。戳一戳的勾选框与 `/pet nudge on\|off` 是同一份数据。
 - 群内黑名单直接写进框架的 `group_settings.<群号>.blacklist`，与管理面板「群成员」页的
   开关是**同一份数据**：面板里勾选/取消与 `/pet ban`、`/pet unban` 双向同步。
 - 消息事件的黑名单过滤由框架统一完成；戳一戳（notice）事件不走消息链路，插件内单独挡了一道。
@@ -91,7 +93,7 @@ petpet 0.1.1
 | `cooldown_time` | `0` | 群聊冷却（毫秒），0 不冷却 |
 | `user_cooldown_time` | `1000` | 同一用户在群内的冷却（毫秒） |
 | `in_cooldown_message` | `技能冷却中...` | 冷却提示；`[nudge]` 表示改戳一戳，留空不回复 |
-| `nudge_enabled` | `true` | 戳一戳开关；关掉后群里戳机器人不再回应 |
+| `nudge_enabled` | `true` | 戳一戳总开关（全局）；与按群的 `/pet nudge` 开关取 AND |
 | `nudge_probability` | `0.3` | 戳一戳触发随机模板的概率（0-1） |
 | `global_cooldown_time` | `0` | 全局冷却（毫秒），所有群 / 用户共用，0 不冷却 |
 | `default_template` | 空 | 默认模板 id，留空自动选权重最高者 |

@@ -35,6 +35,9 @@ const FEATURE: &str = "petpet";
 /// 分群功能开关的 key（管理指令）；单列一项，关掉渲染后仍能执行 `/pet on`
 const FEATURE_ADMIN: &str = "petpet.admin";
 
+/// 分群功能开关的 key（戳一戳）；独立于渲染开关，可单独控制本群是否回应戳一戳
+const FEATURE_NUDGE: &str = "petpet.nudge";
+
 /// 插件 id（= `plugins/petpet/`、`config/petpet/arona.yml`、`data/petpet/`）
 pub const PLUGIN_ID: &str = "petpet";
 
@@ -251,7 +254,12 @@ impl AronaPlugin for PetpetPlugin {
         registrar.feature(Feature {
             key: FEATURE_ADMIN,
             name: "Petpet 管理指令",
-            description: "`/pet on|off|ban|unban` 等群开关与黑名单指令（仅群管理员）",
+            description: "`/pet on|off|nudge|ban|unban` 等群开关与黑名单指令（仅群管理员）",
+        });
+        registrar.feature(Feature {
+            key: FEATURE_NUDGE,
+            name: "Petpet 戳一戳",
+            description: "被戳一戳时随机回复表情（可在本群单独开关）",
         });
         registrar.config::<PetpetConfig>(SECTION);
         Ok(())
@@ -294,11 +302,11 @@ impl AronaPlugin for PetpetPlugin {
             }),
         );
 
-        // 戳一戳
+        // 戳一戳（独立开关 FEATURE_NUDGE，关掉渲染也能单独控制）
         let poke_ctx = ctx.clone();
         let poke_state = state.clone();
         ctx.listen_feature(
-            FEATURE,
+            FEATURE_NUDGE,
             &[
                 BodyFilter::Notice(NoticeKind::Poke),
                 BodyFilter::Notice(NoticeKind::Nudge),
@@ -332,7 +340,7 @@ impl AronaPlugin for PetpetPlugin {
         )
         .with_feature(FEATURE_ADMIN)
         .with_permission(Permission::GroupAdmin)
-        .with_usage("/pet on|off|enable|disable|ban|unban|banlist|status")]);
+        .with_usage("/pet on|off|nudge|enable|disable|ban|unban|banlist|status")]);
 
         Ok(())
     }
@@ -409,6 +417,8 @@ async fn handle_message(state: &State, ctx: &PluginContext, event: &EventContext
                 | "banlist"
                 | "blacklist"
                 | "feature"
+                | "nudge"
+                | "戳一戳"
                 | "status"
                 | "plugin"
                 | "help"
@@ -478,7 +488,10 @@ async fn handle_nudge(state: &State, ctx: &PluginContext, event: &EventContext) 
         return;
     }
     let config = ctx.config::<PetpetConfig>(SECTION).get();
-    if !config.nudge_enabled {
+    // 全局总闸（arona.yml 的 nudge_enabled）与按群开关（/pet nudge）取 AND
+    if !config.nudge_enabled
+        || !arona::runtime::config::feature_enabled(event.group_id(), FEATURE_NUDGE)
+    {
         return;
     }
     if state.cooldown.locked(GLOBAL_COOLDOWN) {
@@ -557,6 +570,7 @@ Petpet 管理指令（群管理员可用）：
 /pet enable | disable   全局启用 / 停用 Petpet 插件
 /pet plugin on | off    在本群整体启用 / 停用 Petpet 插件
 /pet feature on | off   只切换本群的渲染功能开关
+/pet nudge on | off     单独开关本群的戳一戳响应
 /pet ban @某人          把成员加入本群黑名单
 /pet unban @某人        把成员移出本群黑名单
 /pet banlist            查看本群黑名单
@@ -627,11 +641,14 @@ async fn admin_command_raw(
                         Some(group_id),
                     );
                     let feature = arona::runtime::config::feature_enabled(Some(group_id), FEATURE);
+                    let nudge =
+                        arona::runtime::config::feature_enabled(Some(group_id), FEATURE_NUDGE);
                     let setting = arona::runtime::config::group_setting(group_id);
                     text.push_str(&format!(
-                        "\n本群插件：{}\n本群 Petpet：{}\n本群黑名单：{} 人",
+                        "\n本群插件：{}\n本群 Petpet：{}\n本群戳一戳：{}\n本群黑名单：{} 人",
                         if in_group { "启用" } else { "停用" },
                         if feature { "开启" } else { "关闭" },
+                        if nudge { "开启" } else { "关闭" },
                         setting.blacklist.len()
                     ));
                 }
@@ -653,6 +670,18 @@ async fn admin_command_raw(
             };
             match admin::set_group_feature(group_id, FEATURE, value) {
                 Ok(()) => format!("本群 Petpet 已{}", if value { "开启" } else { "关闭" }),
+                Err(err) => format!("操作失败：{err}"),
+            }
+        }
+        "nudge" | "戳一戳" => {
+            let Some(value) = switch_value(args.get(1)) else {
+                return "用法：/pet nudge on|off".to_string();
+            };
+            let Some(group_id) = group else {
+                return "该指令只能在群里使用".to_string();
+            };
+            match admin::set_group_feature(group_id, FEATURE_NUDGE, value) {
+                Ok(()) => format!("本群戳一戳已{}", if value { "开启" } else { "关闭" }),
                 Err(err) => format!("操作失败：{err}"),
             }
         }
@@ -1169,6 +1198,16 @@ mod tests {
         assert_eq!(value("1"), Some(true));
         assert_eq!(value("0"), Some(false));
         assert_eq!(value("maybe"), None);
+    }
+
+    #[test]
+    fn nudge_switch_is_its_own_feature_key() {
+        // 戳一戳有独立的分群开关，和渲染 key 不重名
+        assert_eq!(FEATURE, "petpet");
+        assert_eq!(FEATURE_NUDGE, "petpet.nudge");
+        assert!(FEATURE_NUDGE.starts_with(FEATURE) && FEATURE_NUDGE != FEATURE);
+        // 帮助文本里要能看到这个单独开关
+        assert!(ADMIN_USAGE.contains("/pet nudge on | off"));
     }
 
     #[test]
