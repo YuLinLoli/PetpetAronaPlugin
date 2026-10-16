@@ -6,7 +6,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use image::{codecs::gif::{GifEncoder, Repeat}, Delay, Frame, Rgba, RgbaImage};
+use image::{
+    Delay, Frame, Rgba, RgbaImage,
+    codecs::gif::{GifEncoder, Repeat},
+};
 
 use crate::assets::{AssetStore, Frames};
 use crate::imageops;
@@ -61,7 +64,8 @@ pub async fn render(
     for (index, element) in template.elements.iter().enumerate() {
         match element {
             Element::Image(image) => {
-                if let Some(source) = load_image_source(template, image, index, request, assets).await?
+                if let Some(source) =
+                    load_image_source(template, image, index, request, assets).await?
                 {
                     sources.insert(index, source);
                 }
@@ -93,15 +97,16 @@ pub async fn render(
     let mut canvas_w = eval_count(&template.canvas.width, &ctx, Axis::X);
     let mut canvas_h = eval_count(&template.canvas.height, &ctx, Axis::Y);
     if (canvas_w <= 0.0 || canvas_h <= 0.0)
-        && let Some(frames) = backgrounds.values().next() {
-            let size = frames.sample(0).dimensions();
-            if canvas_w <= 0.0 {
-                canvas_w = size.0 as f32;
-            }
-            if canvas_h <= 0.0 {
-                canvas_h = size.1 as f32;
-            }
+        && let Some(frames) = backgrounds.values().next()
+    {
+        let size = frames.sample(0).dimensions();
+        if canvas_w <= 0.0 {
+            canvas_w = size.0 as f32;
         }
+        if canvas_h <= 0.0 {
+            canvas_h = size.1 as f32;
+        }
+    }
     if canvas_w <= 0.0 {
         canvas_w = 300.0;
     }
@@ -143,7 +148,6 @@ pub async fn render(
         frames = 1;
     }
     frames = frames.min(max_frames.max(1) as usize);
-
 
     // 输出缩放比先算好，逐帧「渲染 → 缩放 → 编码 → 释放」，不再把所有帧同时留在内存里
     // （默认 120 帧 × 1200² 的整组缓存在最坏情况下会到 GB 级）。
@@ -434,12 +438,7 @@ fn apply_crop(pixmap: &RgbaImage, crop: &Crop, ctx: &Ctx) -> RgbaImage {
         Crop::Polygon(points) => {
             let evaluated: Vec<(f32, f32)> = points
                 .iter()
-                .map(|point| {
-                    (
-                        ctx.eval(&point[0], Axis::X),
-                        ctx.eval(&point[1], Axis::Y),
-                    )
-                })
+                .map(|point| (ctx.eval(&point[0], Axis::X), ctx.eval(&point[1], Axis::Y)))
                 .collect();
             imageops::crop_polygon(pixmap, &evaluated)
         }
@@ -504,7 +503,9 @@ fn draw_image(
     };
     imageops::apply_filters(&mut pixmap, &image.filters, &assets);
 
-    let opacity = template::pick(&image.opacity, frame).copied().unwrap_or(1.0);
+    let opacity = template::pick(&image.opacity, frame)
+        .copied()
+        .unwrap_or(1.0);
 
     match &coords {
         Coords::Xywh { .. } => {
@@ -520,8 +521,7 @@ fn draw_image(
                 &image.position,
             );
             if let Some(radius) = template::pick(&image.radius, frame) {
-                let values =
-                    imageops::radius_values(radius, fitted.width(), fitted.height(), &ctx);
+                let values = imageops::radius_values(radius, fitted.width(), fitted.height(), &ctx);
                 imageops::round_corners(&mut fitted, values);
             }
             let mut paste_x = rect.x;
@@ -544,18 +544,13 @@ fn draw_image(
         Coords::P4a { points, anchor } => {
             let mut evaluated = [[0.0f32; 2]; 4];
             for (index, point) in points.iter().enumerate() {
-                evaluated[index] =
-                    [ctx.eval(&point[0], Axis::X), ctx.eval(&point[1], Axis::Y)];
+                evaluated[index] = [ctx.eval(&point[0], Axis::X), ctx.eval(&point[1], Axis::Y)];
             }
-            let anchor_point = (
-                ctx.eval(&anchor[0], Axis::X),
-                ctx.eval(&anchor[1], Axis::Y),
-            );
+            let anchor_point = (ctx.eval(&anchor[0], Axis::X), ctx.eval(&anchor[1], Axis::Y));
             let (points_abs, anchor_abs) = imageops::absolute_coords(evaluated, anchor_point);
             let element_size = (pixmap.width() as f32, pixmap.height() as f32);
             if let Some(radius) = template::pick(&image.radius, frame) {
-                let values =
-                    imageops::radius_values(radius, pixmap.width(), pixmap.height(), &ctx);
+                let values = imageops::radius_values(radius, pixmap.width(), pixmap.height(), &ctx);
                 imageops::round_corners(&mut pixmap, values);
             }
             let mut deformed = imageops::deform(&pixmap, points_abs);
@@ -593,23 +588,35 @@ fn draw_text(
     if !frame_in_range(element.start, element.end, total_frames, frame) {
         return Ok(());
     }
-    let raw = template::pick(&element.text, frame).cloned().unwrap_or_default();
+    let raw = template::pick(&element.text, frame)
+        .cloned()
+        .unwrap_or_default();
     let content = substitute(&raw, request);
-    let coords = template::pick(&element.coords, frame).cloned().unwrap_or(template::TextCoords {
-        x: Node::px(0.0),
-        y: Node::px(0.0),
-        max_w: None,
-    });
+    let coords = template::pick(&element.coords, frame)
+        .cloned()
+        .unwrap_or(template::TextCoords {
+            x: Node::px(0.0),
+            y: Node::px(0.0),
+            max_w: None,
+        });
     let x = ctx.eval(&coords.x, Axis::X);
     let y = ctx.eval(&coords.y, Axis::Y);
     let max_w = coords.max_w.as_ref().map(|node| ctx.eval(node, Axis::X));
     let color = template::pick(&element.color, frame)
         .copied()
         .unwrap_or([255, 255, 255, 255]);
-    let size = template::pick(&element.size, frame).copied().unwrap_or(16.0);
-    let max_size = template::pick(&element.max_size, frame).copied().unwrap_or(96.0);
-    let angle = template::pick(&element.angle, frame).copied().unwrap_or(0.0);
-    let opacity = template::pick(&element.opacity, frame).copied().unwrap_or(1.0);
+    let size = template::pick(&element.size, frame)
+        .copied()
+        .unwrap_or(16.0);
+    let max_size = template::pick(&element.max_size, frame)
+        .copied()
+        .unwrap_or(96.0);
+    let angle = template::pick(&element.angle, frame)
+        .copied()
+        .unwrap_or(0.0);
+    let opacity = template::pick(&element.opacity, frame)
+        .copied()
+        .unwrap_or(1.0);
 
     let style = TextStyle {
         size,
@@ -718,7 +725,9 @@ fn substitute_inner(raw: &str, request: &Request, depth: usize) -> String {
                     .get(name)
                     .filter(|value| !value.is_empty())
                     .cloned()
-                    .or_else(|| default.map(|default| substitute_inner(default, request, depth + 1)))
+                    .or_else(|| {
+                        default.map(|default| substitute_inner(default, request, depth + 1))
+                    })
                     .unwrap_or_default();
                 out.push_str(&value);
                 index = closing + 1;
@@ -847,7 +856,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("petpet_render_e2e_{}_{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("petpet_render_e2e_{}_{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -914,8 +924,15 @@ mod tests {
 
         let assets = AssetStore::new(8);
         let font = crate::text::FontSet::detect("");
-        let output =
-            block_on(render(&template, &request, &assets, font.as_ref(), 60, 1024)).unwrap();
+        let output = block_on(render(
+            &template,
+            &request,
+            &assets,
+            font.as_ref(),
+            60,
+            1024,
+        ))
+        .unwrap();
 
         assert_eq!(output.extension, "gif");
         assert_eq!(output.frames, 3);
@@ -1031,12 +1048,23 @@ mod tests {
 
         let assets = AssetStore::new(8);
         let font = crate::text::FontSet::detect("");
-        let output =
-            block_on(render(&template, &request, &assets, font.as_ref(), 60, 4096)).unwrap();
+        let output = block_on(render(
+            &template,
+            &request,
+            &assets,
+            font.as_ref(),
+            60,
+            4096,
+        ))
+        .unwrap();
         let decoded = image::load_from_memory(&output.bytes).unwrap().to_rgba8();
 
         // 画布应等于素材尺寸（`avatar0Width*2` x `avatar0Height`），而不是回退到 300
-        assert_eq!(decoded.dimensions(), (200, 100), "画布应由 avatar0Width*2 反推");
+        assert_eq!(
+            decoded.dimensions(),
+            (200, 100),
+            "画布应由 avatar0Width*2 反推"
+        );
 
         for x in 0..100u32 {
             let left = decoded.get_pixel(x, 50).0[0];
@@ -1093,11 +1121,22 @@ mod tests {
 
         let assets = AssetStore::new(8);
         let font = crate::text::FontSet::detect("");
-        let output =
-            block_on(render(&template, &request, &assets, font.as_ref(), 60, 4096)).unwrap();
+        let output = block_on(render(
+            &template,
+            &request,
+            &assets,
+            font.as_ref(),
+            60,
+            4096,
+        ))
+        .unwrap();
         let decoded = image::load_from_memory(&output.bytes).unwrap().to_rgba8();
 
-        assert_eq!(decoded.dimensions(), (100, 200), "画布应由 avatar0Height*2 反推");
+        assert_eq!(
+            decoded.dimensions(),
+            (100, 200),
+            "画布应由 avatar0Height*2 反推"
+        );
         for y in 0..100u32 {
             let top = decoded.get_pixel(50, y).0[0];
             let bottom = decoded.get_pixel(50, y + 100).0[0];
@@ -1153,16 +1192,31 @@ mod tests {
 
         let assets = AssetStore::new(8);
         let font = crate::text::FontSet::detect("");
-        let output =
-            block_on(render(&template, &request, &assets, font.as_ref(), 60, 4096)).unwrap();
+        let output = block_on(render(
+            &template,
+            &request,
+            &assets,
+            font.as_ref(),
+            60,
+            4096,
+        ))
+        .unwrap();
         let decoded = image::load_from_memory(&output.bytes).unwrap().to_rgba8();
 
         assert_eq!(decoded.dimensions(), (200, 100));
         for y in 0..100u32 {
             for x in 0..100u32 {
                 let base = decoded.get_pixel(x, y).0;
-                assert_eq!(base, decoded.get_pixel(199 - x, y).0, "左右镜像(x={x},y={y})");
-                assert_eq!(base, decoded.get_pixel(x, 99 - y).0, "上下镜像(x={x},y={y})");
+                assert_eq!(
+                    base,
+                    decoded.get_pixel(199 - x, y).0,
+                    "左右镜像(x={x},y={y})"
+                );
+                assert_eq!(
+                    base,
+                    decoded.get_pixel(x, 99 - y).0,
+                    "上下镜像(x={x},y={y})"
+                );
             }
         }
     }
@@ -1286,9 +1340,8 @@ mod tests {
         let output = block_on(render(&template, &request, &assets, None, 10, 4096)).unwrap();
         let decoded = image::load_from_memory(&output.bytes).unwrap().to_rgba8();
 
-        let close = |pixel: &Rgba<u8>, target: [u8; 4]| {
-            (0..3).all(|i| pixel.0[i].abs_diff(target[i]) < 40)
-        };
+        let close =
+            |pixel: &Rgba<u8>, target: [u8; 4]| (0..3).all(|i| pixel.0[i].abs_diff(target[i]) < 40);
         let mut counts = [0usize; 4];
         for pixel in decoded.pixels() {
             for (index, target) in quadrants.iter().enumerate() {
@@ -1386,7 +1439,14 @@ mod tests {
                 request.texts.insert(key.clone(), "这个".to_string());
             }
             request.texts.insert("0".to_string(), "这个".to_string());
-            match block_on(render(&template, &request, &assets, font.as_ref(), 60, 1024)) {
+            match block_on(render(
+                &template,
+                &request,
+                &assets,
+                font.as_ref(),
+                60,
+                1024,
+            )) {
                 Ok(_) => ok += 1,
                 Err(err) => failed.push(format!("{id}: 渲染失败 {err}")),
             }
@@ -1430,8 +1490,15 @@ mod tests {
 
         let assets = AssetStore::new(8);
         let font = crate::text::FontSet::detect("");
-        let output =
-            block_on(render(&template, &request, &assets, font.as_ref(), 120, 4096)).unwrap();
+        let output = block_on(render(
+            &template,
+            &request,
+            &assets,
+            font.as_ref(),
+            120,
+            4096,
+        ))
+        .unwrap();
         eprintln!(
             "真实模板 {id}: {} 帧, {} 字节, 扩展名 {}",
             output.frames,

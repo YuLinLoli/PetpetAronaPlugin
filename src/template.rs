@@ -63,17 +63,57 @@ pub enum Filter {
     Mirror,
     Flip,
     Blur(f32),
-    Contrast { brightness: f32, contrast: f32 },
-    Hsb { hue: f32, saturation: f32, brightness: f32 },
+    Contrast {
+        brightness: f32,
+        contrast: f32,
+    },
+    Hsb {
+        hue: f32,
+        saturation: f32,
+        brightness: f32,
+    },
     Noise(f32),
-    Swirl { radius: f32, angle: f32, x: f32, y: f32 },
-    Bulge { radius: f32, strength: f32, x: f32, y: f32 },
-    Swim { scale: f32, stretch: f32, angle: f32, amount: f32, turbulence: f32, time: f32 },
-    Halftone { radius: f32, angle: f32 },
-    DotScreen { radius: f32, angle: f32 },
+    Swirl {
+        radius: f32,
+        angle: f32,
+        x: f32,
+        y: f32,
+    },
+    Bulge {
+        radius: f32,
+        strength: f32,
+        x: f32,
+        y: f32,
+    },
+    Swim {
+        scale: f32,
+        stretch: f32,
+        angle: f32,
+        amount: f32,
+        turbulence: f32,
+        time: f32,
+    },
+    Halftone {
+        radius: f32,
+        angle: f32,
+    },
+    DotScreen {
+        radius: f32,
+        angle: f32,
+    },
     Denoise,
-    Oil { skip: i32, range: i32, levels: i32 },
-    SwingTwist { max_angle: f32, amplitude: f32, omega: f32, decay: f32, index_offset: i32 },
+    Oil {
+        skip: i32,
+        range: i32,
+        levels: i32,
+    },
+    SwingTwist {
+        max_angle: f32,
+        amplitude: f32,
+        omega: f32,
+        decay: f32,
+        index_offset: i32,
+    },
     Mirage(MirageSpec),
 }
 
@@ -162,8 +202,16 @@ pub enum Element {
 pub enum Coords {
     /// 该帧不绘制（JSON 里的 `null`）
     Empty,
-    Xywh { x: Node, y: Node, w: Node, h: Node },
-    P4a { points: [[Node; 2]; 4], anchor: [Node; 2] },
+    Xywh {
+        x: Node,
+        y: Node,
+        w: Node,
+        h: Node,
+    },
+    P4a {
+        points: [[Node; 2]; 4],
+        anchor: [Node; 2],
+    },
 }
 
 /// 文本坐标 `[x, y, max_width?]`
@@ -177,7 +225,12 @@ pub struct TextCoords {
 /// 裁切区域：(x1,y1)-(x2,y2) 矩形，或多边形（相对元素尺寸的百分比）
 #[derive(Clone, Debug)]
 pub enum Crop {
-    Xywh { x1: Node, y1: Node, x2: Node, y2: Node },
+    Xywh {
+        x1: Node,
+        y1: Node,
+        x2: Node,
+        y2: Node,
+    },
     Polygon(Vec<[Node; 2]>),
 }
 
@@ -234,8 +287,7 @@ impl RotateTransition {
                 } else if index as f32 >= total {
                     end
                 } else {
-                    self.start
-                        + (end - self.start) * self.easing.easing(index as f32 / total)
+                    self.start + (end - self.start) * self.easing.easing(index as f32 / total)
                 }
             }
         }
@@ -357,7 +409,10 @@ pub fn load_dir(id: &str, dir: &Path) -> Result<Template, String> {
             .map_err(|err| format!("解析 {} 失败: {err}", old_file.display()))?;
         parse_old(id, dir, &json).map_err(|err| format!("模板 {id}: {err}"))
     } else {
-        Err(format!("{} 下没有 template.json / data.json", dir.display()))
+        Err(format!(
+            "{} 下没有 template.json / data.json",
+            dir.display()
+        ))
     }
 }
 // ==================== 新版 template.json ====================
@@ -404,9 +459,10 @@ fn parse_new(id: &str, dir: &Path, json: &Value) -> Result<Template, String> {
     }
     if delays.is_empty()
         && let Some(fps) = json.get("fps").and_then(Value::as_f64)
-            && fps > 0.0 {
-                delays.push((1000.0 / fps).round().clamp(1.0, 65535.0) as u32);
-            }
+        && fps > 0.0
+    {
+        delays.push((1000.0 / fps).round().clamp(1.0, 65535.0) as u32);
+    }
     if delays.is_empty() {
         delays.push(65);
     }
@@ -466,9 +522,10 @@ fn parse_canvas(value: Option<&Value>) -> Result<Canvas, String> {
     canvas.height = value.get("height").map(length::from_json).transpose()?;
     canvas.length = value.get("length").map(length::from_json).transpose()?;
     if let Some(color) = value.get("color").and_then(Value::as_str)
-        && let Some(rgba) = parse_color(color) {
-            canvas.color = rgba;
-        }
+        && let Some(rgba) = parse_color(color)
+    {
+        canvas.color = rgba;
+    }
     canvas.reverse = value
         .get("reverse")
         .and_then(Value::as_bool)
@@ -547,7 +604,8 @@ fn parse_rotate(value: Option<&Value>) -> Result<Option<RotateTransition>, Strin
             ..default
         })),
         Value::Object(map) => {
-            let number = |key: &str, fallback: f32| map.get(key).and_then(as_f32).unwrap_or(fallback);
+            let number =
+                |key: &str, fallback: f32| map.get(key).and_then(as_f32).unwrap_or(fallback);
             let easing = map
                 .get("easing")
                 .and_then(Value::as_str)
@@ -556,10 +614,7 @@ fn parse_rotate(value: Option<&Value>) -> Result<Option<RotateTransition>, Strin
             Ok(Some(RotateTransition {
                 start: number("start", 0.0),
                 end: number("end", 360.0),
-                count: map
-                    .get("rotate_count")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(1) as i32,
+                count: map.get("rotate_count").and_then(Value::as_i64).unwrap_or(1) as i32,
                 easing,
             }))
         }
@@ -659,7 +714,10 @@ fn parse_text(value: &Value) -> Result<TextElement, String> {
 }
 
 fn parse_text_style(value: Option<&Value>) -> TextStyleKind {
-    match value.and_then(Value::as_str).map(|s| s.to_ascii_lowercase()) {
+    match value
+        .and_then(Value::as_str)
+        .map(|s| s.to_ascii_lowercase())
+    {
         Some(ref name) if name == "bold" => TextStyleKind::Bold,
         Some(ref name) if name == "italic" => TextStyleKind::Italic,
         Some(ref name) if name == "bold_italic" => TextStyleKind::BoldItalic,
@@ -912,7 +970,10 @@ fn parse_radius_list(value: Option<&Value>) -> Vec<RadiusSpec> {
     let Some(value) = value else {
         return Vec::new();
     };
-    items_of(Some(value)).into_iter().map(parse_radius).collect()
+    items_of(Some(value))
+        .into_iter()
+        .map(parse_radius)
+        .collect()
 }
 
 fn parse_radius(value: &Value) -> RadiusSpec {
@@ -1064,7 +1125,10 @@ fn parse_old(id: &str, dir: &Path, json: &Value) -> Result<Template, String> {
         .unwrap_or(true);
     let hidden = json.get("hidden").and_then(Value::as_bool).unwrap_or(false);
     let delay = json.get("delay").and_then(Value::as_i64).unwrap_or(65) as u32;
-    let reverse = json.get("reverse").and_then(Value::as_bool).unwrap_or(false);
+    let reverse = json
+        .get("reverse")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     let mut elements: Vec<Element> = Vec::new();
 
@@ -1101,8 +1165,12 @@ fn parse_old(id: &str, dir: &Path, json: &Value) -> Result<Template, String> {
     let mut under: Vec<Element> = Vec::new();
     let mut on_top: Vec<Element> = Vec::new();
     if let Some(list) = json.get("avatar").and_then(Value::as_array) {
-        let is_on_top =
-            |avatar: &Value| avatar.get("avatarOnTop").and_then(Value::as_bool).unwrap_or(true);
+        let is_on_top = |avatar: &Value| {
+            avatar
+                .get("avatarOnTop")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+        };
         // 头像 id 按 petpet 的 `avatar{index}` 命名：先非置顶组、后置顶组，各自按数组顺序递增。
         // `background.size` 里的 `avatar0Width` 之类引用就靠这个 id 命中元素尺寸变量。
         let mut avatar_index = 0usize;
@@ -1217,7 +1285,11 @@ fn parse_old_avatar(avatar: &Value, index: usize) -> Result<ImageElement, String
         position: Offset::center(),
         angle: vec![avatar.get("angle").and_then(as_f32).unwrap_or(0.0)],
         opacity: vec![avatar.get("opacity").and_then(as_f32).unwrap_or(1.0)],
-        radius: if avatar.get("round").and_then(Value::as_bool).unwrap_or(false) {
+        radius: if avatar
+            .get("round")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
             vec![RadiusSpec::Corners([
                 Node::percent(50.0),
                 Node::percent(50.0),
@@ -1238,7 +1310,11 @@ fn parse_old_avatar(avatar: &Value, index: usize) -> Result<ImageElement, String
             "CENTER" => Offset::center(),
             _ => length::parse_offset("left top"),
         },
-        rotate: if avatar.get("rotate").and_then(Value::as_bool).unwrap_or(false) {
+        rotate: if avatar
+            .get("rotate")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
             Some(RotateTransition {
                 start: 0.0,
                 end: 360.0,
@@ -1258,8 +1334,10 @@ fn parse_old_coords(pos: &Value) -> Result<Vec<Coords>, String> {
     let list = pos
         .as_array()
         .ok_or_else(|| "旧版 pos 必须是数组".to_string())?;
-    let is_point =
-        |item: &Value| item.as_array().is_some_and(|pair| pair.len() == 2 && !pair[0].is_array());
+    let is_point = |item: &Value| {
+        item.as_array()
+            .is_some_and(|pair| pair.len() == 2 && !pair[0].is_array())
+    };
     let single = !list.iter().all(Value::is_array)
         || ((list.len() == 4 || list.len() == 5) && list.iter().all(is_point));
     if single {
@@ -1283,8 +1361,10 @@ fn old_coords_entry(value: &Value) -> Result<Coords, String> {
             None => Ok(Node::px(0.0)),
         }
     };
-    let is_point =
-        |item: &Value| item.as_array().is_some_and(|pair| pair.len() == 2 && !pair[0].is_array());
+    let is_point = |item: &Value| {
+        item.as_array()
+            .is_some_and(|pair| pair.len() == 2 && !pair[0].is_array())
+    };
     if list.len() >= 4 && list.iter().all(is_point) {
         let mut points: Vec<[Node; 2]> = Vec::with_capacity(list.len());
         for point in list {
@@ -1815,7 +1895,10 @@ mod tests {
     #[test]
     fn converts_old_text_tokens() {
         assert_eq!(convert_old_text_tokens("$txt1[x]", false), "${0:x}");
-        assert_eq!(convert_old_text_tokens("hi $from", false), "hi ${from:-from}");
+        assert_eq!(
+            convert_old_text_tokens("hi $from", false),
+            "hi ${from:-from}"
+        );
         // greedy：第一个 $txtN[] 变成整条原文
         assert_eq!(
             convert_old_text_tokens("$txt1[a] $txt2[b]", true),

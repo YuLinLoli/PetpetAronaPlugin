@@ -227,9 +227,7 @@ pub fn parse(input: &str) -> Result<Node, String> {
 /// 从 JSON 值解析长度：数字直接是 px，字符串走表达式
 pub fn from_json(value: &serde_json::Value) -> Result<Node, String> {
     match value {
-        serde_json::Value::Number(number) => {
-            Ok(Node::px(number.as_f64().unwrap_or(0.0) as f32))
-        }
+        serde_json::Value::Number(number) => Ok(Node::px(number.as_f64().unwrap_or(0.0) as f32)),
         serde_json::Value::String(text) => parse(text),
         other => Err(format!("长度字段类型不支持: {other}")),
     }
@@ -368,9 +366,7 @@ impl Parser {
             self.pos += 1;
         }
         let text: String = self.chars[start..self.pos].iter().collect();
-        let value: f32 = text
-            .parse()
-            .map_err(|_| format!("非法数字: {text}"))?;
+        let value: f32 = text.parse().map_err(|_| format!("非法数字: {text}"))?;
         self.skip_ws();
         if self.peek() == Some('%') {
             self.pos += 1;

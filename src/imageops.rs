@@ -1,9 +1,9 @@
 //! 图像操作与滤镜（缩放/裁切/圆角/旋转/混合），供 [`crate::render`] 使用。
 
-use image::{imageops::FilterType, Rgba, RgbaImage};
+use image::{Rgba, RgbaImage, imageops::FilterType};
 
 use crate::length::Offset;
-use crate::template::{Fit, Filter, MirageSpec, RadiusSpec};
+use crate::template::{Filter, Fit, MirageSpec, RadiusSpec};
 
 /// 按 fit 把源图放进 target_w × target_h 的框里；`position` 决定内容在框内的偏移
 pub fn fit_into(
@@ -28,7 +28,13 @@ pub fn fit_into(
             let scaled = resize(src, cw, ch);
             let mut canvas = RgbaImage::new(target_w, target_h);
             let (ox, oy) = position.eval(target_w as f32 - cw as f32, target_h as f32 - ch as f32);
-            paste(&mut canvas, &scaled, ox.round() as i32, oy.round() as i32, 1.0);
+            paste(
+                &mut canvas,
+                &scaled,
+                ox.round() as i32,
+                oy.round() as i32,
+                1.0,
+            );
             canvas
         }
         Fit::Cover => {
@@ -38,7 +44,13 @@ pub fn fit_into(
             let scaled = resize(src, cw, ch);
             let mut canvas = RgbaImage::new(target_w, target_h);
             let (ox, oy) = position.eval(target_w as f32 - cw as f32, target_h as f32 - ch as f32);
-            paste(&mut canvas, &scaled, ox.round() as i32, oy.round() as i32, 1.0);
+            paste(
+                &mut canvas,
+                &scaled,
+                ox.round() as i32,
+                oy.round() as i32,
+                1.0,
+            );
             canvas
         }
         Fit::None => {
@@ -236,7 +248,8 @@ fn sample_bilinear(image: &RgbaImage, x: f32, y: f32) -> Option<Rgba<u8>> {
         if px < 0 || py < 0 || px >= w || py >= h {
             continue;
         }
-        let weight = ((1.0 - (x - px as f32).abs()).max(0.0)) * ((1.0 - (y - py as f32).abs()).max(0.0));
+        let weight =
+            ((1.0 - (x - px as f32).abs()).max(0.0)) * ((1.0 - (y - py as f32).abs()).max(0.0));
         let pixel = image.get_pixel(px as u32, py as u32);
         for c in 0..4 {
             acc[c] += pixel[c] as f32 * weight;
@@ -304,9 +317,12 @@ pub fn apply_filters(image: &mut RgbaImage, filters: &[Filter], assets: &FilterA
                 brightness,
             } => hsb(image, *hue, *saturation, *brightness),
             Filter::Noise(amount) => noise(image, *amount),
-            Filter::Swirl { radius, angle, x, y } => {
-                *image = swirl(image, *radius, *angle / 2.0, *x, *y)
-            }
+            Filter::Swirl {
+                radius,
+                angle,
+                x,
+                y,
+            } => *image = swirl(image, *radius, *angle / 2.0, *x, *y),
             Filter::Bulge {
                 radius,
                 strength,
@@ -377,8 +393,7 @@ fn gray(image: &mut RgbaImage) {
 
 fn binarize(image: &mut RgbaImage) {
     for pixel in image.pixels_mut() {
-        let luminance =
-            0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32;
+        let luminance = 0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32;
         let value = if luminance >= 128.0 { 255 } else { 0 };
         pixel[0] = value;
         pixel[1] = value;
@@ -556,10 +571,7 @@ fn distort(
         for x in 0..w {
             let (sx, sy) = inverse(x as f32, y as f32);
             let inside = clamp_edge
-                || (sx >= 0.0
-                    && sy >= 0.0
-                    && sx <= (w - 1) as f32
-                    && sy <= (h - 1) as f32);
+                || (sx >= 0.0 && sy >= 0.0 && sx <= (w - 1) as f32 && sy <= (h - 1) as f32);
             if inside {
                 out.put_pixel(x, y, sample_clamp(image, sx, sy));
             }
@@ -831,9 +843,12 @@ fn oil(image: &RgbaImage, skip: i32, range: i32, levels: i32) -> RgbaImage {
                             let r = pixel[0] as i32;
                             let g = pixel[1] as i32;
                             let b = pixel[2] as i32;
-                            let ri = ((r * levels as i32) >> 8).clamp(0, levels as i32 - 1) as usize;
-                            let gi = ((g * levels as i32) >> 8).clamp(0, levels as i32 - 1) as usize;
-                            let bi = ((b * levels as i32) >> 8).clamp(0, levels as i32 - 1) as usize;
+                            let ri =
+                                ((r * levels as i32) >> 8).clamp(0, levels as i32 - 1) as usize;
+                            let gi =
+                                ((g * levels as i32) >> 8).clamp(0, levels as i32 - 1) as usize;
+                            let bi =
+                                ((b * levels as i32) >> 8).clamp(0, levels as i32 - 1) as usize;
                             r_total[ri] += r;
                             g_total[gi] += g;
                             b_total[bi] += b;
@@ -983,7 +998,8 @@ fn mirage(cover: &RgbaImage, inner_src: &RgbaImage, spec: &MirageSpec) -> RgbaIm
                 let mut channels = [0u8; 3];
                 if alpha > 0.0 {
                     for c in 0..3 {
-                        let value = ((inner_data[c] - ai + 255.0 - cover_data[c]) * spec.weight + ai
+                        let value = ((inner_data[c] - ai + 255.0 - cover_data[c]) * spec.weight
+                            + ai
                             - 255.0
                             + cover_data[c])
                             / alpha;
