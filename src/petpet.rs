@@ -169,14 +169,16 @@ impl State {
 
     /// 取这一次渲染要用的字面：槽里还有人拿着就复用，没有才按配置重新解析（0.3 s 量级）。
     /// 返回的是强引用，调用方活着它就一直活着，调用方一放手就还给分配器。
+    ///
+    /// 解析握在写锁里：并发上限是 2，两头同时冷启动会各解析一份（两份 160 MB 当量 + 双份 CPU），
+    /// 让后到的排在锁上等同一份才是对的。
     fn font(&self, configured: &str) -> Option<Arc<FontSet>> {
-        if let Some(alive) = self.font.read().ok()?.upgrade() {
+        let mut slot = self.font.write().ok()?;
+        if let Some(alive) = slot.upgrade() {
             return Some(alive);
         }
         let fresh = Arc::new(FontSet::detect(configured)?);
-        if let Ok(mut slot) = self.font.write() {
-            *slot = Arc::downgrade(&fresh);
-        }
+        *slot = Arc::downgrade(&fresh);
         Some(fresh)
     }
 }
