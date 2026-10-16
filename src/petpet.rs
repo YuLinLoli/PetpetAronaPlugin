@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use arona::admin;
@@ -20,10 +20,10 @@ use arona::runtime::config::Feature;
 use arona::runtime::dispatcher::{CommandContext, CommandRegistration, Permission, handler};
 use arona::runtime::log;
 use arona::runtime::message::{ForwardMessage, MessageSegment, OutgoingMessage};
-use tokio::sync::Semaphore;
 use arona::runtime::priority::ListenerPriority;
+use tokio::sync::Semaphore;
 
-use crate::assets::{avatar_url, data_uri, AssetStore};
+use crate::assets::{AssetStore, avatar_url, data_uri};
 use crate::config::{PetpetConfig, SECTION};
 use crate::render::{self, Request};
 use crate::template::{self, Template};
@@ -61,7 +61,8 @@ impl Library {
     }
 
     fn default_template(&self) -> Option<&Template> {
-        self.default_index.and_then(|index| self.templates.get(index))
+        self.default_index
+            .and_then(|index| self.templates.get(index))
     }
 
     fn random(&self) -> Option<&Template> {
@@ -100,6 +101,11 @@ const GLOBAL_COOLDOWN: i64 = 0;
 
 /// 同时渲染的上限：单次渲染内存峰值不小，并发叠加容易顶爆
 const RENDER_CONCURRENCY: usize = 2;
+
+/// 素材缓存的闲置回收任务：登记名与轮询周期（十分钟没碰的素材，每五分钟来看一次）
+const ASSET_SWEEP_JOB: &str = "PetpetAssetSweep";
+const ASSET_SWEEP_EVERY_SECS: u64 = 300;
+const ASSET_IDLE_SECS: u64 = 600;
 
 /// 冷却表条目超过这个数量就顺手清一次过期项
 const COOLDOWN_PRUNE_AT: usize = 4096;
@@ -145,7 +151,10 @@ impl Cooldown {
 struct State {
     assets: Arc<AssetStore>,
     library: Arc<RwLock<Arc<Library>>>,
-    font: Arc<RwLock<Option<Arc<FontSet>>>>,
+    /// 字面只存 Weak：`FontSet` 是 fontdue 把字体里每个码位的轮廓全量预解析后的那一份，
+    /// simhei 实测 126 MB，而它只在一次渲染的那几十毫秒里用得上，不该由状态替进程长期按着。
+    /// 谁在渲染谁拿 `Arc`（见 [`State::font`]），最后一个落下就整个还掉。
+    font: Arc<RwLock<Weak<FontSet>>>,
     cooldown: Arc<Cooldown>,
     render_permits: Arc<Semaphore>,
 }
@@ -158,11 +167,17 @@ impl State {
         }
     }
 
-    fn font(&self) -> Option<Arc<FontSet>> {
-        match self.font.read() {
-            Ok(guard) => guard.clone(),
-            Err(_) => None,
+    /// 取这一次渲染要用的字面：槽里还有人拿着就复用，没有才按配置重新解析（0.3 s 量级）。
+    /// 返回的是强引用，调用方活着它就一直活着，调用方一放手就还给分配器。
+    fn font(&self, configured: &str) -> Option<Arc<FontSet>> {
+        if let Some(alive) = self.font.read().ok()?.upgrade() {
+            return Some(alive);
         }
+        let fresh = Arc::new(FontSet::detect(configured)?);
+        if let Ok(mut slot) = self.font.write() {
+            *slot = Arc::downgrade(&fresh);
+        }
+        Some(fresh)
     }
 }
 
@@ -182,7 +197,7 @@ impl PetpetPlugin {
             state: State {
                 assets: Arc::new(AssetStore::with_limits(512, 256 * 1024 * 1024)),
                 library: Arc::new(RwLock::new(Arc::new(Library::default()))),
-                font: Arc::new(RwLock::new(None)),
+                font: Arc::new(RwLock::new(Weak::new())),
                 cooldown: Arc::new(Cooldown::default()),
                 render_permits: Arc::new(Semaphore::new(RENDER_CONCURRENCY)),
             },
@@ -217,19 +232,25 @@ impl PetpetPlugin {
     fn cleanup_legacy_image_dir(&self, ctx: &PluginContext) {
         let dir = ctx.data_dir().join("image");
         if dir.is_dir() && std::fs::remove_dir_all(&dir).is_ok() {
-            log::info(format!("Petpet：已清理旧的落盘临时图目录 {}", dir.display()));
+            log::info(format!(
+                "Petpet：已清理旧的落盘临时图目录 {}",
+                dir.display()
+            ));
         }
     }
 
+    /// 启动与热重载时探测一次字面并把用的那一份报出来——配置写错要当场说，
+    /// 不该等用户发图才发现。探测到的那份只以 Weak 存进槽里，函数一返回就还给分配器：
+    /// 真的要用它的是下一次渲染（见 [`State::font`]），那时才解析第二遍（0.3 s 量级）。
     fn reload_font(&self, ctx: &PluginContext) {
         let config = ctx.config::<PetpetConfig>(SECTION).get();
-        let font = FontSet::detect(&config.font_path).map(Arc::new);
-        match &font {
+        let probed = FontSet::detect(&config.font_path).map(Arc::new);
+        match &probed {
             Some(font) => log::info(format!("Petpet：使用字体 {}", font.source)),
             None => log::warning("Petpet：找不到可用字体，文本元素将不会渲染"),
         }
         if let Ok(mut guard) = self.state.font.write() {
-            *guard = font;
+            *guard = probed.map(|font| Arc::downgrade(&font)).unwrap_or_default();
         }
     }
 }
@@ -324,23 +345,27 @@ impl AronaPlugin for PetpetPlugin {
 
         // 管理指令：`/pet on|off|...`。命令名 "pet" 会被框架规范化成 "/pet"，
         // 所以不会和渲染用的无前缀触发词打架。
-        ctx.commands(vec![CommandRegistration::new(
-            vec!["pet".to_string(), "petpet".to_string()],
-            "Petpet 群管理：群开关与成员黑名单",
-            handler(|context: Arc<CommandContext>, args: Vec<String>| async move {
-                let text = admin_command(&context, &args).await;
-                let mut message = OutgoingMessage::text(text);
-                if context.group_id.is_some()
-                    && let Some(id) = context.message_id
-                {
-                    message = message.with_quote(id);
-                }
-                Some(message)
-            }),
-        )
-        .with_feature(FEATURE_ADMIN)
-        .with_permission(Permission::GroupAdmin)
-        .with_usage("/pet on|off|nudge|enable|disable|ban|unban|banlist|status")]);
+        ctx.commands(vec![
+            CommandRegistration::new(
+                vec!["pet".to_string(), "petpet".to_string()],
+                "Petpet 群管理：群开关与成员黑名单",
+                handler(
+                    |context: Arc<CommandContext>, args: Vec<String>| async move {
+                        let text = admin_command(&context, &args).await;
+                        let mut message = OutgoingMessage::text(text);
+                        if context.group_id.is_some()
+                            && let Some(id) = context.message_id
+                        {
+                            message = message.with_quote(id);
+                        }
+                        Some(message)
+                    },
+                ),
+            )
+            .with_feature(FEATURE_ADMIN)
+            .with_permission(Permission::GroupAdmin)
+            .with_usage("/pet on|off|nudge|enable|disable|ban|unban|banlist|status"),
+        ]);
 
         Ok(())
     }
@@ -349,6 +374,19 @@ impl AronaPlugin for PetpetPlugin {
         self.cleanup_legacy_image_dir(ctx);
         self.reload_font(ctx);
         let _ = self.reload(ctx)?;
+        // 素材缓存的闲置回收：见 `AssetStore::sweep_idle` 的口径。上限只在新素材挤进来时才生效，
+        // 所以没人用的那一段必须由这个 tick 来缩——不然一次热闹之后就长期停在高位。
+        let assets = self.state.assets.clone();
+        ctx.repeat_job(
+            ASSET_SWEEP_EVERY_SECS,
+            ASSET_SWEEP_JOB,
+            Arc::new(move || {
+                let removed = assets.sweep_idle(Duration::from_secs(ASSET_IDLE_SECS));
+                if removed > 0 {
+                    log::debug(format!("Petpet：素材缓存回收闲置的 {removed} 项"));
+                }
+            }),
+        );
         Ok(())
     }
 
@@ -383,7 +421,7 @@ async fn handle_message(state: &State, ctx: &PluginContext, event: &EventContext
     let command = config.command.trim();
     let library = state.library();
     if library.templates.is_empty() {
-    // 模板库为空是「发了指令没反应」的头号原因：显式回一句提示，别静默
+        // 模板库为空是「发了指令没反应」的头号原因：显式回一句提示，别静默
         if !command.is_empty() && text == command {
             reply_text(
                 event,
@@ -459,7 +497,10 @@ async fn handle_message(state: &State, ctx: &PluginContext, event: &EventContext
         return;
     }
 
-    log::debug(format!("Petpet：模板 {} 触发（文本「{text}」）", template.id));
+    log::debug(format!(
+        "Petpet：模板 {} 触发（文本「{text}」）",
+        template.id
+    ));
     let list = build_image_refs(ctx, event, &config).await;
     let request = build_request(&template, &list, &trigger, event, ctx, is_group);
     let output = match render_template(state, &template, &request, &config).await {
@@ -476,10 +517,14 @@ async fn handle_message(state: &State, ctx: &PluginContext, event: &EventContext
     }
 
     if is_group {
-        state.cooldown.lock(event.user_id(), config.user_cooldown_time);
+        state
+            .cooldown
+            .lock(event.user_id(), config.user_cooldown_time);
     }
     state.cooldown.lock(subject, config.cooldown_time);
-    state.cooldown.lock(GLOBAL_COOLDOWN, config.global_cooldown_time);
+    state
+        .cooldown
+        .lock(GLOBAL_COOLDOWN, config.global_cooldown_time);
 }
 
 async fn handle_nudge(state: &State, ctx: &PluginContext, event: &EventContext) {
@@ -558,7 +603,9 @@ async fn handle_nudge(state: &State, ctx: &PluginContext, event: &EventContext) 
         return;
     }
     state.cooldown.lock(subject, config.cooldown_time.max(3000));
-    state.cooldown.lock(GLOBAL_COOLDOWN, config.global_cooldown_time);
+    state
+        .cooldown
+        .lock(GLOBAL_COOLDOWN, config.global_cooldown_time);
 }
 
 // ==================== 管理指令 ====================
@@ -636,10 +683,8 @@ async fn admin_command_raw(
             let mut text = format!("Petpet 全局：{}", if global { "启用" } else { "停用" });
             match group {
                 Some(group_id) => {
-                    let in_group = arona::runtime::config::plugin_enabled_in_group(
-                        PLUGIN_ID,
-                        Some(group_id),
-                    );
+                    let in_group =
+                        arona::runtime::config::plugin_enabled_in_group(PLUGIN_ID, Some(group_id));
                     let feature = arona::runtime::config::feature_enabled(Some(group_id), FEATURE);
                     let nudge =
                         arona::runtime::config::feature_enabled(Some(group_id), FEATURE_NUDGE);
@@ -764,7 +809,11 @@ fn parse_trigger(
     let command = config.command.trim();
     let lookup = |name: &str| -> Option<Template> {
         let template = library.get(name)?;
-        if config.disabled_templates.iter().any(|id| id == &template.id) {
+        if config
+            .disabled_templates
+            .iter()
+            .any(|id| id == &template.id)
+        {
             return None;
         }
         Some(template.clone())
@@ -848,12 +897,7 @@ async fn reply_text(event: &EventContext, is_group: bool, text: impl Into<String
 }
 
 /// 模板索引：按原版用**合并转发**发出（实现端不支持时框架会自动降级成平铺消息）
-async fn reply_index(
-    ctx: &PluginContext,
-    event: &EventContext,
-    library: &Library,
-    is_group: bool,
-) {
+async fn reply_index(ctx: &PluginContext, event: &EventContext, library: &Library, is_group: bool) {
     let index = library.index_text();
     // 群里按原版用合并转发发（实现端不支持时框架会自动降级成平铺消息）；
     // 私聊没有稳定的合并转发通道，直接发文本。
@@ -1012,9 +1056,7 @@ fn build_request(
         let value = match key.as_str() {
             "from" => list.get(second_last).map(|entry| entry.url.clone()),
             "to" => list.get(last).map(|entry| entry.url.clone()),
-            "group" => event
-                .group_id()
-                .map(|id| avatar_url(id, size)),
+            "group" => event.group_id().map(|id| avatar_url(id, size)),
             "bot" => Some(avatar_url(ctx.onebot_config.self_id, size)),
             other => other
                 .parse::<usize>()
@@ -1061,7 +1103,7 @@ async fn render_template(
         .acquire_owned()
         .await
         .map_err(|err| format!("渲染限流器已关闭: {err}"))?;
-    let font = state.font();
+    let font = state.font(&config.font_path);
     render::render(
         template,
         request,
@@ -1120,12 +1162,20 @@ fn load_library(dir: &Path, config: &PetpetConfig) -> Library {
         if !path.is_dir() {
             continue;
         }
-        let Some(id) = path.file_name().and_then(|name| name.to_str()).map(str::to_string) else {
+        let Some(id) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+        else {
             continue;
         };
         match template::load_dir(&id, &path) {
             Ok(template) => {
-                if config.disabled_templates.iter().any(|disabled| disabled == &template.id) {
+                if config
+                    .disabled_templates
+                    .iter()
+                    .any(|disabled| disabled == &template.id)
+                {
                     continue;
                 }
                 library.templates.push(template);
@@ -1267,7 +1317,10 @@ mod tests {
     #[test]
     fn trigger_text_takes_only_text_segments() {
         assert_eq!(
-            content_text(&[MessageSegment::At(123), MessageSegment::Text(" 亲亲".into())]),
+            content_text(&[
+                MessageSegment::At(123),
+                MessageSegment::Text(" 亲亲".into())
+            ]),
             "亲亲"
         );
         assert_eq!(
@@ -1323,5 +1376,77 @@ mod tests {
         let cooldown = Cooldown::default();
         cooldown.lock(1, 0);
         assert!(!cooldown.locked(1));
+    }
+
+    /// 字面这份常驻的两条钉子：**一次渲染之内复用同一份**（第二次拿不该再解析一遍），
+    /// 以及**渲染结束之后整个还掉**。要单线程独占进程跑，否则并发用例的存活字节会一起算进来：
+    /// `cargo test --release --lib -- --ignored --test-threads=1 --nocapture memprobe`
+    #[test]
+    #[ignore = "要读系统字体，且得独占进程才读得准"]
+    fn the_font_lives_only_as_long_as_the_render_does() {
+        use crate::memprobe::{live, mb, os_footprint};
+        use std::time::Instant;
+
+        let plugin = PetpetPlugin::default();
+        let base = live();
+        let (ws0, _, priv0) = os_footprint();
+        let start = Instant::now();
+        let Some(first) = plugin.state.font("") else {
+            println!("（本机找不到可渲染中文的字体，这一条验不了）");
+            return;
+        };
+        let parsed = start.elapsed();
+        let held = live() - base;
+        // 真用它一次，别让这一份 Arc 被当成没用到
+        let width = first.text_width("戳一戳", 32.0);
+        let again = Instant::now();
+        let second = plugin
+            .state
+            .font("")
+            .expect("第一次拿得到，第二次也该拿得到");
+        let reused = live() - base;
+        let reuse_cost = again.elapsed();
+
+        println!(
+            "字面常驻 {}（解析 {:.2} s，量到宽度 {width:.0}px）",
+            mb(held),
+            parsed.as_secs_f64()
+        );
+        println!(
+            "渲染期间再拿一次：常驻 {}（多 {}），耗时 {:.3} ms",
+            mb(reused),
+            mb(reused.saturating_sub(held)),
+            reuse_cost.as_secs_f64() * 1000.0
+        );
+        drop(second);
+        drop(first);
+        let rest = live() - base;
+        let (ws1, peak, priv1) = os_footprint();
+        println!(
+            "drop 之后存活 {}，工作集 {} → {}，私有 {} → {}，进程峰值工作集 {}",
+            mb(rest),
+            mb(ws0),
+            mb(ws1),
+            mb(priv0),
+            mb(priv1),
+            mb(peak)
+        );
+        // 复用那条：槽里还有人拿着就 upgrade，不该再解析第二遍
+        assert!(
+            reused.saturating_sub(held) < 4 * 1024 * 1024,
+            "同一次渲染里第二次拿多占了 {}，像是在重解析",
+            mb(reused.saturating_sub(held))
+        );
+        assert!(
+            reuse_cost.as_millis() < 50,
+            "第二次拿花了 {:.1} ms，不是在复用",
+            reuse_cost.as_secs_f64() * 1000.0
+        );
+        // 这一条是「用完就释放」的闸：渲染结束还回不到基线，就是有强引用没放
+        assert!(
+            rest < 8 * 1024 * 1024,
+            "drop 之后仍常驻 {}，说明字面还被状态按着",
+            mb(rest)
+        );
     }
 }

@@ -4,6 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use image::codecs::gif::GifDecoder;
 use image::{AnimationDecoder, RgbaImage};
@@ -84,6 +85,8 @@ impl Cache {
 struct Entry {
     frames: Arc<Frames>,
     bytes: usize,
+    /// 最后一次被哪一次渲染碰到的时刻，[`AssetStore::sweep_idle`] 认这个
+    at: Instant,
 }
 
 impl AssetStore {
@@ -116,7 +119,9 @@ impl AssetStore {
 
     fn get(&self, key: &str) -> Option<Arc<Frames>> {
         let mut cache = self.cache.lock().ok()?;
-        let frames = cache.map.get(key)?.frames.clone();
+        let entry = cache.map.get_mut(key)?;
+        entry.at = Instant::now();
+        let frames = entry.frames.clone();
         touch(&mut cache.order, key);
         Some(frames)
     }
@@ -131,6 +136,7 @@ impl AssetStore {
             Entry {
                 frames,
                 bytes: size,
+                at: Instant::now(),
             },
         ) {
             cache.bytes = cache.bytes.saturating_sub(previous.bytes);
@@ -138,6 +144,36 @@ impl AssetStore {
         cache.bytes += size;
         touch(&mut cache.order, &key);
         cache.evict();
+    }
+
+    /// 把 `horizon` 之内没被任何一次渲染碰过的素材丢掉，返回丢掉的条数。
+    ///
+    /// 这一层缓存存的是**解码后的帧位图**（一张 GIF 模板的几十帧都在里面），上限 512 条 / 256 MB；
+    /// LRU 只在新素材挤进来时才淘汰旧的，所以一阵热闹之后它就停在高位替进程按着，再也不缩。
+    /// 表情图是"有人发才画"的东西，十分钟没人碰就基本不会再碰——到点丢掉，下次要用再解一遍
+    /// （本地文件是几毫秒的读+解，远端 URL 会多一次下载，这是这笔账的代价）。
+    pub fn sweep_idle(&self, horizon: Duration) -> usize {
+        let Ok(mut cache) = self.cache.lock() else {
+            return 0;
+        };
+        let deadline = Instant::now()
+            .checked_sub(horizon)
+            .unwrap_or_else(Instant::now);
+        let stale: Vec<String> = cache
+            .map
+            .iter()
+            .filter(|(_, entry)| entry.at <= deadline)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in &stale {
+            if let Some(entry) = cache.map.remove(key) {
+                cache.bytes = cache.bytes.saturating_sub(entry.bytes);
+            }
+        }
+        // 顺序表里那些已经不存在的键不用留：`touch` 只按 key 挪位置，取不到的那一条永远取不到
+        let Cache { map, order, .. } = &mut *cache;
+        order.retain(|key| map.contains_key(key));
+        stale.len()
     }
 
     /// 加载一个资源地址：网络 URL / 本地文件 / 帧序列目录 / 空串（返回 None）
@@ -177,7 +213,11 @@ impl AssetStore {
 /// 把内存里的图像字节编码成 `data:` URI：给内联输入图用，不落盘、不进缓存
 pub fn data_uri(mime: &str, bytes: &[u8]) -> String {
     use base64::Engine as _;
-    let mime = if mime.is_empty() { "application/octet-stream" } else { mime };
+    let mime = if mime.is_empty() {
+        "application/octet-stream"
+    } else {
+        mime
+    };
     format!(
         "data:{mime};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
@@ -227,7 +267,8 @@ fn load_local(path: &Path) -> Result<Frames, String> {
 /// 帧序列目录：按文件名里的数字排序（0.png、1.png ...）
 fn load_frame_dir(dir: &Path) -> Result<Frames, String> {
     let mut entries: Vec<(i64, PathBuf)> = Vec::new();
-    let reader = std::fs::read_dir(dir).map_err(|err| format!("读取目录 {} 失败: {err}", dir.display()))?;
+    let reader =
+        std::fs::read_dir(dir).map_err(|err| format!("读取目录 {} 失败: {err}", dir.display()))?;
     for entry in reader.flatten() {
         let path = entry.path();
         if !path.is_file() {
@@ -259,7 +300,8 @@ fn load_frame_dir(dir: &Path) -> Result<Frames, String> {
     entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     let mut frames = Vec::new();
     for (_, path) in entries {
-        let bytes = std::fs::read(&path).map_err(|err| format!("读取 {} 失败: {err}", path.display()))?;
+        let bytes =
+            std::fs::read(&path).map_err(|err| format!("读取 {} 失败: {err}", path.display()))?;
         let single = decode_bytes(&path.to_string_lossy(), &bytes)?;
         frames.push(single.frames.into_iter().next().unwrap());
     }
@@ -351,6 +393,42 @@ mod tests {
         assert!(store.get("a").is_none());
         assert!(store.get("b").is_some());
         assert!(store.get("c").is_some());
+    }
+
+    /// 闲置回收：到点没人碰的丢掉、刚被碰过的续命，条数与字节账跟着清零
+    #[test]
+    fn sweep_idle_drops_untouched_and_keeps_touched() {
+        let store = AssetStore::with_limits(64, usize::MAX);
+        store.put("a".to_string(), solid(10, 10));
+        store.put("b".to_string(), solid(10, 10));
+        std::thread::sleep(Duration::from_millis(20));
+        // 碰一下 a：它的时效起点推到最新，b 仍旧停在 20 ms 前
+        assert!(store.get("a").is_some());
+        assert_eq!(
+            store.sweep_idle(Duration::from_millis(10)),
+            1,
+            "只该丢掉没被碰的那一张"
+        );
+        assert!(store.get("a").is_some(), "刚碰过的不该被回收");
+        assert!(store.get("b").is_none());
+        assert_eq!(store.sweep_idle(Duration::ZERO), 1);
+        let cache = store.cache.lock().unwrap();
+        assert!(
+            cache.map.is_empty() && cache.order.is_empty() && cache.bytes == 0,
+            "全回收之后账目该清零，实得 {} 项 / {} 字节",
+            cache.map.len(),
+            cache.bytes
+        );
+    }
+
+    /// 时效线给得比谁都新时不该丢任何东西（正常轮询就是这一档）
+    #[test]
+    fn sweep_idle_keeps_everything_inside_the_horizon() {
+        let store = AssetStore::with_limits(64, usize::MAX);
+        store.put("a".to_string(), solid(1, 1));
+        store.put("b".to_string(), solid(1, 1));
+        assert_eq!(store.sweep_idle(Duration::from_secs(600)), 0);
+        assert!(store.get("a").is_some() && store.get("b").is_some());
     }
 
     /// 热重载收紧上限后立即裁剪，至少保留最新一条
