@@ -147,23 +147,11 @@ impl Cooldown {
     }
 }
 
-/// 字面槽：强引用 + 最后一次被哪一次渲染碰到的时刻。
-///
-/// 为什么不是 `Weak`（另两个插件那种口径）：petpet 是**每条消息都要出图**的热路径，宽限期让
-/// 连着用的那一段只读一次盘。惰性后端（2026-10-17 换的）之后这件事的代价已经从"重解析 0.33 s
-/// 的百 MB 轮廓"降到"重读 11 MB 文件 + 装载 0.04 s"，所以这一档省的是几十毫秒与一次磁盘读，
-/// 不再是几百 MB——[`FONT_IDLE_SECS`] 没人碰之后仍由素材回收那个 tick 摘掉。
-struct FontSlot {
-    held: Option<Arc<FontSet>>,
-    at: Instant,
-}
-
 /// 插件运行态（字段全是 Arc，方便 clone 进各个钩子闭包）
 #[derive(Clone)]
 struct State {
     assets: Arc<AssetStore>,
     library: Arc<RwLock<Arc<Library>>>,
-    font: Arc<RwLock<FontSlot>>,
     cooldown: Arc<Cooldown>,
     render_permits: Arc<Semaphore>,
 }
@@ -176,34 +164,14 @@ impl State {
         }
     }
 
-    /// 取这一次渲染要用的字面：宽限期内已经装载过就复用，没有才按配置读盘装载（0.04 s 量级）。
-    /// 返回的是强引用，调用方活着它就一直活着。
+    /// 取这一次渲染要用的字面。
     ///
-    /// 装载握在写锁里：并发上限是 2，两头同时冷启动会各读一遍盘、各存一份字节，
-    /// 让后到的排在锁上等同一份才是对的。
+    /// 这里**不留槽**：字面的缓存与生命周期在框架那一级（`arona::runtime::text` 只存 Weak），
+    /// 谁在渲染谁拿着强引用，最后一次渲染结束就整个还给分配器。曾经这里有一个十分钟的宽限期，
+    /// 为的是躲开 fontdue 那 0.33 s 的重解析；惰性后端下装载是 0.01 s，那一档代价已经小到不值得
+    /// 为它维护一份状态（2026-10-17 按用户意见收掉）。
     fn font(&self, configured: &str) -> Option<Arc<FontSet>> {
-        let mut slot = self.font.write().ok()?;
-        slot.at = Instant::now();
-        if let Some(held) = &slot.held {
-            return Some(held.clone());
-        }
-        let fresh = Arc::new(FontSet::detect(configured)?);
-        slot.held = Some(fresh.clone());
-        Some(fresh)
-    }
-
-    /// 把宽限期之外没被任何一次渲染碰过的字面摘掉，返回有没有摘。
-    /// 正在渲染的那一方拿着的是自己的 `Arc` 克隆，所以这里摘掉不打断它，只是下一次要重解析。
-    fn sweep_font(&self, horizon: Duration) -> bool {
-        let Ok(mut slot) = self.font.write() else {
-            return false;
-        };
-        if slot.at.elapsed() > horizon {
-            slot.held = None;
-            true
-        } else {
-            false
-        }
+        FontSet::detect(configured).map(Arc::new)
     }
 }
 
@@ -223,10 +191,6 @@ impl PetpetPlugin {
             state: State {
                 assets: Arc::new(AssetStore::with_limits(512, 256 * 1024 * 1024)),
                 library: Arc::new(RwLock::new(Arc::new(Library::default()))),
-                font: Arc::new(RwLock::new(FontSlot {
-                    held: None,
-                    at: Instant::now(),
-                })),
                 cooldown: Arc::new(Cooldown::default()),
                 render_permits: Arc::new(Semaphore::new(RENDER_CONCURRENCY)),
             },
@@ -269,18 +233,13 @@ impl PetpetPlugin {
     }
 
     /// 启动与热重载时探测一次字面并把用的那一份报出来——配置写错要当场说，
-    /// 不该等用户发图才发现。探测到的这一份就存进槽里（宽限期从这里起算），
-    /// 之后由素材回收那个 tick 在没人用满十分钟后摘掉（见 [`State::sweep_font`]）。
+    /// 不该等用户发图才发现。这一份探测结果只是拿来打日志，不存：真渲染时各自取，
+    /// 缓存与释放在框架那一级（见 [`State::font`]）。
     fn reload_font(&self, ctx: &PluginContext) {
         let config = ctx.config::<PetpetConfig>(SECTION).get();
-        let probed = FontSet::detect(&config.font_path).map(Arc::new);
-        match &probed {
+        match FontSet::detect(&config.font_path) {
             Some(font) => log::info(format!("Petpet：使用字体 {}", font.source)),
             None => log::warning("Petpet：找不到可用字体，文本元素将不会渲染"),
-        }
-        if let Ok(mut slot) = self.state.font.write() {
-            slot.held = probed;
-            slot.at = Instant::now();
         }
     }
 }
@@ -404,16 +363,18 @@ impl AronaPlugin for PetpetPlugin {
         self.cleanup_legacy_image_dir(ctx);
         self.reload_font(ctx);
         let _ = self.reload(ctx)?;
-        // 闲置回收：素材缓存与字面共用这一个 tick。上限只在新素材挤进来时才生效，
-        // 所以没人用的那一段必须由这个 tick 来缩——不然一次热闹之后就长期停在高位。
+        // 闲置回收：素材缓存的。上限只在新素材挤进来时才生效，所以没人用的那一段必须由这个 tick
+        // 来缩——不然一次热闹之后就长期停在高位。字面不在这里管：它由框架那级的 Weak 缓存管，
+        // 最后一次渲染放手就还（见 [`State::font`]）。
         let state = self.state.clone();
         ctx.repeat_job(
             ASSET_SWEEP_EVERY_SECS,
             ASSET_SWEEP_JOB,
             Arc::new(move || {
-                let idle = Duration::from_secs(ASSET_IDLE_SECS);
-                let removed = state.assets.sweep_idle(idle);
-                if state.sweep_font(idle) || removed > 0 {
+                let removed = state
+                    .assets
+                    .sweep_idle(Duration::from_secs(ASSET_IDLE_SECS));
+                if removed > 0 {
                     log::debug(format!("Petpet：闲置回收生效，素材缓存丢掉 {removed} 项"));
                 }
             }),
@@ -1409,13 +1370,14 @@ mod tests {
         assert!(!cooldown.locked(1));
     }
 
-    /// 字面这份常驻的三条钉子：**宽限期内复用同一份**（连着出图不该每次重解析）、
-    /// **刚碰过的不该被回收**、**闲过宽限期之后整个还掉**。要单线程独占进程跑，
+    /// 字面这份常驻的三条钉子：**同一次出图里复用同一份**（第二次拿不该再读盘）、
+    /// **出图一结束就整个还掉**（没有宽限期了，2026-10-17 按用户意见收的）、
+    /// **还掉之后再拿还能长回来**（否则那条释放就是把功能弄丢了）。要单线程独占进程跑，
     /// 否则并发用例的存活字节会一起算进来：
-    /// `cargo test --release --lib -- --ignored --test-threads=1 --nocapture the_font_ages_out`
+    /// `cargo test --release --lib -- --ignored --test-threads=1 --nocapture the_font_goes_back`
     #[test]
     #[ignore = "要读系统字体，且得独占进程才读得准"]
-    fn the_font_ages_out_after_the_grace_period() {
+    fn the_font_goes_back_when_the_render_ends() {
         use crate::memprobe::{live, mb, os_footprint};
 
         let plugin = PetpetPlugin::default();
@@ -1429,7 +1391,7 @@ mod tests {
         let parsed = start.elapsed();
         let held = live() - base;
         // 真用它一次，别让这一份 Arc 被当成没用到
-        let width = first.text_width("戳一戳", 32.0);
+        let width = first.text_width("戳一戳", 32.0, false);
         let again = Instant::now();
         let second = plugin
             .state
@@ -1439,40 +1401,36 @@ mod tests {
         let reuse_cost = again.elapsed();
 
         println!(
-            "字面常驻 {}（解析 {:.2} s，量到宽度 {width:.0}px）",
+            "字面常驻 {}（装载 {:.2} s，量到宽度 {width:.0}px）",
             mb(held),
             parsed.as_secs_f64()
         );
         println!(
-            "宽限期内再拿一次：常驻 {}（多 {}），耗时 {:.3} ms",
+            "出图期间再拿一次：常驻 {}（多 {}），耗时 {:.3} ms",
             mb(reused),
             mb(reused.saturating_sub(held)),
             reuse_cost.as_secs_f64() * 1000.0
         );
-        // 刚碰过的不该被回收：连着出图那一段不付重解析的钱，这是 petpet 与另两个插件不同的一档
+        // 复用那条：框架那级是 Weak 缓存 + Arc 计数，不该再读一遍盘
         assert!(
-            !plugin.state.sweep_font(Duration::from_secs(600)),
-            "刚被渲染碰过的字面不该被回收"
+            reused.saturating_sub(held) < 4 * 1024 * 1024,
+            "出图期间第二次拿多占了 {}，像是在重装一份",
+            mb(reused.saturating_sub(held))
         );
-        drop(second);
-        drop(first);
         assert!(
-            (live() - base).abs_diff(held) < 1024 * 1024,
-            "宽限期之内一次渲染结束就把字面丢了：{} vs {}",
-            mb(live() - base),
-            mb(held)
+            reuse_cost.as_millis() < 50,
+            "第二次拿花了 {:.1} ms，不是在复用",
+            reuse_cost.as_secs_f64() * 1000.0
         );
 
-        // 宽限期过了：tick 把它从槽里摘掉。正在渲染的那一方拿着的是自己的 Arc 克隆，
-        // 所以摘槽不打断那一张图，只是它一放手就整个还给分配器。
-        assert!(
-            plugin.state.sweep_font(Duration::ZERO),
-            "过期的字面该被回收"
-        );
+        // 这一条是「用完就释放」的闸：两次渲染都放手之后必须回到开局那一档。
+        // 插件里不再有字面槽，所以这里红的只会是"某处还按着一份强引用"。
+        drop(second);
+        drop(first);
         let rest = live() - base;
         let (ws1, peak, priv1) = os_footprint();
         println!(
-            "回收之后存活 {}，工作集 {} → {}，私有 {} → {}，进程峰值工作集 {}",
+            "放手之后存活 {}，工作集 {} → {}，私有 {} → {}，进程峰值工作集 {}",
             mb(rest),
             mb(ws0),
             mb(ws1),
@@ -1481,34 +1439,23 @@ mod tests {
             mb(peak)
         );
         assert!(
-            reused.saturating_sub(held) < 4 * 1024 * 1024,
-            "宽限期内第二次拿多占了 {}，像是在重解析",
-            mb(reused.saturating_sub(held))
-        );
-        assert!(
-            reuse_cost.as_millis() < 50,
-            "第二次拿花了 {:.1} ms，不是在复用",
-            reuse_cost.as_secs_f64() * 1000.0
-        );
-        // 这一条是「用完就释放」的闸：闲过去还回不到基线，就是有强引用没放
-        assert!(
             rest < 8 * 1024 * 1024,
-            "回收之后仍常驻 {}，说明字面还被状态按着",
+            "放手之后仍常驻 {}，说明字面还被谁按着",
             mb(rest)
         );
 
-        // 摘干净之后还能再长出来（否则这条回收就是把功能弄丢了）
+        // 还干净之后还能再长出来（否则这条释放就是把功能弄丢了）
         let reparse = Instant::now();
-        let reborn = plugin.state.font("").expect("回收之后再拿一次也该拿得到");
+        let reborn = plugin.state.font("").expect("放手之后再拿一次也该拿得到");
         let regen = live() - base;
         println!(
-            "回收之后再拿：{}，耗时 {:.2} s",
+            "放手之后再拿：{}，耗时 {:.2} s",
             mb(regen),
             reparse.elapsed().as_secs_f64()
         );
         assert!(
             regen.saturating_sub(held) < 4 * 1024 * 1024,
-            "重解析出来的该是同一档规模，实得 {}",
+            "重装出来的该是同一档规模，实得 {}",
             mb(regen)
         );
         drop(reborn);

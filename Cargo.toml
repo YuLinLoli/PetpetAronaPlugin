@@ -2,7 +2,7 @@
 # 插件发布名。真正的插件 id 是 src/lib.rs 里 PluginMeta::new 的第一个参数（"petpet"），
 # 它决定 plugins/<id>/、config/<id>/arona.yml 与 data/<id>/ 的目录名。
 name = "petpet-plugin"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 description = "Arona 功能插件：把 Dituon/petpet 的模板渲染能力移植进 Arona 框架"
 license = "AGPL-3.0-or-later"
@@ -23,8 +23,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 图像编解码：png/jpeg/webp/bmp 读入，gif 多帧读写。关掉默认特性避免拖入 avif/exr 等重依赖。
 image = { version = "0.25", default-features = false, features = ["gif", "png", "jpeg", "webp", "bmp"] }
-# 纯 Rust 字体栅格化（覆盖 CJK 需要运行期加载系统字体，见 src/text.rs）
-ab_glyph = "0.2.32"
+# 字形栅格化不在这里：字面那一层（ab_glyph + 有界字形缓存）收在框架的 arona::runtime::text，
+# 三个出图插件共用那一份实现，见 PLUGIN_DEVELOPMENT.md §7
 tokio = { version = "1", features = ["time", "rt", "macros", "sync"] }
 # base64：输入图内联成 data: URI、输出图交给框架内嵌（不落盘）
 base64 = "0.22"
