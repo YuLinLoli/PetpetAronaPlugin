@@ -1219,18 +1219,16 @@ fn parse_old(id: &str, dir: &Path, json: &Value) -> Result<Template, String> {
     Ok(template)
 }
 
-/// 旧版模板是否使用目录里的 `<数字>.png` 作为背景帧
+/// 旧版模板是否使用目录里的 `<数字>.png` 作为背景帧。
+/// 判定与帧序列的收集共用 [`crate::assets::frame_index`]——两处各写一份时，
+/// 收集那侧会把 `preview.png` 当成多出来的一帧。
 fn dir_has_frame_images(dir: &Path) -> bool {
     let Ok(reader) = std::fs::read_dir(dir) else {
         return false;
     };
-    reader.flatten().any(|entry| {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        name.len() > 4
-            && name.ends_with(".png")
-            && name[..name.len() - 4].chars().all(|ch| ch.is_ascii_digit())
-    })
+    reader
+        .flatten()
+        .any(|entry| crate::assets::frame_index(&entry.path()).is_some())
 }
 fn parse_old_avatar(avatar: &Value, index: usize) -> Result<ImageElement, String> {
     let kind = avatar

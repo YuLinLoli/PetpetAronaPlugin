@@ -264,6 +264,28 @@ fn load_local(path: &Path) -> Result<Frames, String> {
     }
 }
 
+/// 目录里这一张算不算背景帧序列的一帧：文件名必须是 `<纯数字>.png`。
+///
+/// 这条判定**只有这一处**——`template::dir_has_frame_images`（决定"要不要加背景元素"）
+/// 与 [`load_frame_dir`]（决定"哪些文件进帧序列"）都读它。两边各写一份的时候，
+/// 收集那侧放宽成"任何图像"，于是模板目录里任何一张非数字图（`preview.png` 最常见，
+/// 新版模板的预览图就放同一目录）会被当成**多出来的一帧**排在末尾：帧数 +1，
+/// `pos`/`angle`/`delay` 这些逐帧列表与球的位置就此错开，成品最后一帧还是一整张画布。
+/// 原版用的是 `Regex("\\d+.png$")`，同一口径。
+pub fn frame_index(path: &Path) -> Option<i64> {
+    if !path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+    {
+        return None;
+    }
+    let stem = path.file_stem()?.to_str()?;
+    (!stem.is_empty() && stem.chars().all(|ch| ch.is_ascii_digit()))
+        .then(|| stem.parse::<i64>().ok())
+        .flatten()
+}
+
 /// 帧序列目录：按文件名里的数字排序（0.png、1.png ...）
 fn load_frame_dir(dir: &Path) -> Result<Frames, String> {
     let mut entries: Vec<(i64, PathBuf)> = Vec::new();
@@ -274,24 +296,9 @@ fn load_frame_dir(dir: &Path) -> Result<Frames, String> {
         if !path.is_file() {
             continue;
         }
-        let is_image = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| {
-                matches!(
-                    ext.to_ascii_lowercase().as_str(),
-                    "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif"
-                )
-            })
-            .unwrap_or(false);
-        if !is_image {
+        let Some(key) = frame_index(&path) else {
             continue;
-        }
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default();
-        let key = stem.parse::<i64>().unwrap_or(i64::MAX);
+        };
         entries.push((key, path));
     }
     if entries.is_empty() {
@@ -370,6 +377,40 @@ mod tests {
 
     fn solid(width: u32, height: u32) -> Arc<Frames> {
         Arc::new(Frames::single(RgbaImage::new(width, height)))
+    }
+
+    /// 背景帧序列只认 `<纯数字>.png`。模板目录里放一张 `preview.png`（新版模板的预览图
+    /// 就在同一目录）不该多出第 11 帧——帧数一多，`pos`/`angle`/`delay` 这些逐帧列表
+    /// 就跟素材对不上了，表现出来是动图后半段错位。
+    #[test]
+    fn a_frame_directory_counts_only_numbered_pngs() {
+        let dir = std::env::temp_dir().join(format!("petpet-frames-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for index in 0..10 {
+            RgbaImage::from_pixel(8, 8, image::Rgba([0, 0, 0, 0]))
+                .save(dir.join(format!("{index}.png")))
+                .unwrap();
+        }
+        std::fs::write(dir.join("data.json"), b"{}").unwrap();
+        // 杂图：内容无所谓——修好之后它们连解码都到不了，只用来验名字判定
+        for stray in ["preview.png", "ball.jpg", "0x.png", "1.png.bak"] {
+            std::fs::write(dir.join(stray), b"not a frame").unwrap();
+        }
+
+        let frames = load_local(&dir).expect("目录该能当帧序列读");
+        assert_eq!(frames.len(), 10, "只该数到 10 帧，多出来的都是杂图");
+        // 排序按文件名里的数字，不是字符串序（10.png 不该排在 2.png 前面）
+        assert_eq!(
+            frame_index(&dir.join("10.png")),
+            Some(10),
+            "数字帧要按数值排"
+        );
+        assert_eq!(frame_index(&dir.join("preview.png")), None);
+        assert_eq!(frame_index(&dir.join("ball.jpg")), None, "原版只收 .png");
+        assert_eq!(frame_index(&dir.join("0x.png")), None);
+        assert_eq!(frame_index(&dir.join("data.json")), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 每张 10x10 RGBA 约 400 字节；字节上限到了就淘汰最旧的
