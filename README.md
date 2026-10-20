@@ -6,20 +6,26 @@
 ## 发布信息
 
 ```text
-petpet 0.1.5
-适用于 Arona-rs 1.1.0（框架契约 1.0.0，符号布局 10）
-构建工具链：rustc 1.98.0，x86_64-pc-windows-msvc，--release，crt-static
+petpet 0.1.7
+适用于 Arona-rs 1.2.0（框架契约 1.0.0，符号布局 10）
+Windows：rustc 1.98.0，x86_64-pc-windows-msvc，--release，crt-static
+Linux：  rustc 1.98.0，x86_64-unknown-linux-gnu，--release，cargo-zigbuild 按 glibc 2.17 基线链接
 下载后放进 <框架运行目录>/plugins/petpet/，重启框架
 ```
 
-产物名是 `petpet_plugin.dll`；插件 id 为 `petpet`，决定 `config/petpet/arona.yml`、
-`data/petpet/` 这两个目录。工具链必须与宿主完全一致，对不上会被装载器直接拒载（框架
-`PLUGIN_DEVELOPMENT.md` §22）。
+产物名 Windows 是 `petpet_plugin.dll`、Linux 是 `libpetpet_plugin.so`，**两者不能互换**：
+插件是被 `dlopen` 进宿主进程的，装载前框架要逐项比对工具链指纹，目标三元组就是其中一项。
+Linux 那份按 glibc 2.17 链接，所以框架的标准包与 compat 包宿主装的是同一个 `.so`，不必二选一；
+这个后缀只影响链接阶段，指纹里的 `target` 仍是 `x86_64-unknown-linux-gnu`，与普通 gnu 构建一致。
+
+插件 id 为 `petpet`，决定 `config/petpet/arona.yml`、`data/petpet/` 这两个目录。工具链必须与
+宿主完全一致，对不上会被装载器直接拒载（框架 `PLUGIN_DEVELOPMENT.md` §22）。
 
 ## 安装
 
-1. 用同一套工具链编译出 `petpet_plugin.dll`（见「从源码构建」）。
-2. 放进 `<运行目录>/plugins/petpet/petpet_plugin.dll`。
+1. 用同一套工具链编译出动态库（见「从源码构建」）：Windows 是 `petpet_plugin.dll`，
+   Linux 是 `libpetpet_plugin.so`。
+2. 放进 `<运行目录>/plugins/petpet/`：Windows 用 `petpet_plugin.dll`，Linux 用 `libpetpet_plugin.so`。
 3. 重启框架，在管理面板里启用「Petpet 表情包」功能。
 4. 首次启动会创建 `data/petpet/templates/` 并写入一份说明文件。
 5. 把模板（每个模板一个子目录）放进 `data/petpet/templates/<模板名>/`：
