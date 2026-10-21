@@ -6,8 +6,8 @@
 ## 发布信息
 
 ```text
-petpet 0.1.7
-适用于 Arona-rs 1.2.0（框架契约 1.0.0，符号布局 10）
+petpet 0.1.8
+适用于 Arona-rs 1.2.1（符号布局 10）
 Windows：rustc 1.98.0，x86_64-pc-windows-msvc，--release，crt-static
 Linux：  rustc 1.98.0，x86_64-unknown-linux-gnu，--release，cargo-zigbuild 按 glibc 2.17 基线链接
 下载后放进 <框架运行目录>/plugins/petpet/，重启框架
@@ -20,6 +20,8 @@ Linux 那份按 glibc 2.17 链接，所以框架的标准包与 compat 包宿主
 
 插件 id 为 `petpet`，决定 `config/petpet/arona.yml`、`data/petpet/` 这两个目录。工具链必须与
 宿主完全一致，对不上会被装载器直接拒载（框架 `PLUGIN_DEVELOPMENT.md` §22）。
+框架 1.2.1 起只比布局号 + 工具链指纹，crate 版本不再参与；但 1.2.0 及更早编的插件在 1.2.1
+宿主上会被拒载——指纹串去掉了 `arona/<版本>` 前缀，而比对是全等，按同一份源码重编即可。
 
 ## 安装
 
