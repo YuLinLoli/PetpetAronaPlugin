@@ -2,7 +2,7 @@
 # 插件发布名。真正的插件 id 是 src/lib.rs 里 PluginMeta::new 的第一个参数（"petpet"），
 # 它决定 plugins/<id>/、config/<id>/arona.yml 与 data/<id>/ 的目录名。
 name = "petpet-plugin"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 description = "Arona 功能插件：把 Dituon/petpet 的模板渲染能力移植进 Arona 框架"
 license = "AGPL-3.0-or-later"

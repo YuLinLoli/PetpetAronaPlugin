@@ -6,8 +6,8 @@
 ## 发布信息
 
 ```text
-petpet 0.1.8
-适用于 Arona-rs 1.2.1（符号布局 10）
+petpet 0.1.9
+适用于 Arona-rs 1.2.2（符号布局 10）
 Windows：rustc 1.98.0，x86_64-pc-windows-msvc，--release，crt-static
 Linux：  rustc 1.98.0，x86_64-unknown-linux-gnu，--release，cargo-zigbuild 按 glibc 2.17 基线链接
 下载后放进 <框架运行目录>/plugins/petpet/，重启框架
